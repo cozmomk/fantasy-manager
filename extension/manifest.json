@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Fantasy Manager Highlights",
+  "version": "0.1.0",
+  "description": "Decision board for Yahoo Fantasy Football: waiver comparisons, start/sit and trends. Read-only, runs only in leagues you belong to.",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://football.fantasysports.yahoo.com/f1/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
