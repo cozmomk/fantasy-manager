@@ -101,6 +101,14 @@ Only the structure of Yahoo's pages is mocked, from what was observed on the rea
 markup, the offline tests will still pass while the live page breaks, so a single careful live check after any
 big Yahoo redesign is still worth doing.
 
+## Free adds and dropped players
+
+- **Open roster spots.** An empty bench slot (counted from the league's roster settings) is called out on the Lineup tab, the roster and every comparison: you can add a player without dropping anyone.
+- **Just dropped.** The daily snapshot checks players dropped in your league in the last 4 days (up to 4 player cards, one request each). Anyone still unclaimed and at least 70% rostered across Yahoo shows in a banner above the tabs.
+- **Kickers and defenses** are ranked by Yahoo's projection for this week, then by recent scoring, and the comparison weighs that projection. Recent scoring alone says little about a matchup-driven position.
+- **"Last 2" text** names a bye or a missed game inside the window ("last game 3.8 (missed wk 8)") instead of reading like a slump.
+- **Team page speed.** Your roster is read from the page you are on, and kicker and defense history loads after the lineup appears. Requests stay one at a time and spaced out.
+
 ## If Yahoo changes its pages
 
 On every load the extension checks that each page it reads still has the expected structure (list columns, your team tables, player notes, transactions). A red banner at the top of the tray means a critical check failed: the board stops recommending and says what changed. A yellow banner means a non-critical source (notes, transactions, Sleeper) could not be read. Offline tests for each case are in `tests/drift.test.js`.

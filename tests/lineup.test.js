@@ -1,6 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { launch, openBoard, waitForBoard, waitIdle, teamUrl, CONTENT_JS } from './helpers.js';
+import { launch, openBoard, waitForBoard, waitIdle, teamUrl, listUrl, CONTENT_JS } from './helpers.js';
 import { players, LEAGUE_ID, TEAM_ID } from './fixtures.js';
 
 let browser;
@@ -273,7 +273,7 @@ describe('any league you belong to', () => {
     await waitIdle(page);
     assert.equal(await page.evaluate(k => localStorage.getItem(k), 'ff:team:' + LEAGUE_ID), TEAM_ID);
     const { t, ...cfg } = await page.evaluate(k => JSON.parse(localStorage.getItem(k)), 'ff:cfg:' + LEAGUE_ID);
-    assert.deepEqual(cfg, { name: 'Friend League', playoffStart: 16, rec: 0.5, passTd: 6, unknown: ['DL'] });
+    assert.deepEqual(cfg, { name: 'Friend League', playoffStart: 16, rec: 0.5, passTd: 6, unknown: ['DL'], v: 2 });
     assert.ok(t > 0);
     assert.equal(await page.evaluate(k => JSON.parse(localStorage.getItem(k))['Q/W/R/T'], 'ff:slots:' + LEAGUE_ID), 1);
     assert.deepEqual(await page.evaluate(() => window.__FF_TEST__.api.GOOD), { QB: 20, RB: 9, WR: 10, TE: 7, K: 7, DEF: 6 });
@@ -324,6 +324,66 @@ describe('superflex leagues', () => {
     }, [{ ...Q('a', 'QB', 20), bye: 5 }, { ...Q('b', 'BN', 12), bye: 6 }, P('r', 'RB', 'BN', 9)]);
     assert.equal(r.spare, null);
     assert.equal(r.cut, 'r');
+    await context.close();
+  });
+});
+
+describe('free adds', () => {
+  const slots = { QB: 1, RB: 2, WR: 2, TE: 1, 'W/R/T': 1, K: 1, DEF: 1, BN: 4, IR: 1 };
+  const lineupText = page => page.locator('#ff-tray').innerText();
+  it('an empty bench slot is called out as an add that costs nobody', async () => {
+    const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID), slots });
+    await waitForBoard(page, { radar: false });
+    assert.match(await lineupText(page), /Open roster spot: you have 1 empty bench slot/);
+    await context.close();
+  });
+  it('a full bench says nothing', async () => {
+    const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID), slots: { ...slots, BN: 3 } });
+    await waitForBoard(page, { radar: false });
+    assert.doesNotMatch(await lineupText(page), /Open roster spot/);
+    await context.close();
+  });
+  it('flags a widely rostered player dropped in the last few days, and skips the rest', async () => {
+    const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID), snapDelayMs: 100 });
+    await waitForBoard(page, { radar: false });
+    await page.waitForFunction(() => /Just dropped/.test(document.getElementById('ff-tray').innerText), null, { timeout: 30000 });
+    const t = await lineupText(page);
+    assert.match(t, /Just dropped in your league: Nico Collins/);
+    assert.match(t, /Nico Collins \(Hou - WR\): 100% rostered across Yahoo, dropped by Brain Trust .*now on Waivers \(Nov 4\)/);
+    assert.doesNotMatch(t, /Deep Backup|Marvin Harrison/);
+    await context.close();
+  });
+});
+
+describe('kickers, defenses and thin records', () => {
+  it('ranks kickers by this week\'s projection, not only recent scoring', async () => {
+    const { page, context } = await openBoard(browser, { url: listUrl('K') });
+    await waitForBoard(page);
+    const names = await page.locator('.ff-cand').allInnerTexts();
+    assert.match(names[0], /Chase McLaughlin/);
+    assert.match(names[0], /Projected 11\.0 this week/);
+    assert.match(await page.locator('#ff-tray').innerText(), /ranked by Yahoo's projection for week/);
+    await context.close();
+  });
+  it('names the bye or missed game inside the last-2 window', async () => {
+    const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID), load: true });
+    await page.waitForFunction(() => window.__FF_TEST__.api);
+    const t = await page.evaluate(() => {
+      const f = window.__FF_TEST__.api.formText;
+      return [f({ wk: [4, 5], weeks: [8, 9], form: 8.5, bye: 9 }), f({ wk: [4, 5], weeks: [3.8, NaN], form: 3.8, bye: 9 }), f({ wk: [4, 5], weeks: [NaN, NaN], form: NaN, bye: 5 })];
+    });
+    assert.deepEqual(t, ['last 2 8.5', 'last game 3.8 (missed wk 5)', 'no games in the last 2 (missed wk 4, bye wk 5)']);
+    await context.close();
+  });
+});
+
+describe('team page speed', () => {
+  it('reads your roster from the page itself and fills in kickers and defenses afterwards', async () => {
+    const { page, context, stats } = await openBoard(browser, { url: teamUrl(TEAM_ID) });
+    await waitForBoard(page, { radar: false });
+    await page.waitForFunction(() => (window.__ffMarks || []).some(m => /kicker\/defense loaded/.test(m)), null, { timeout: 30000 });
+    assert.equal((stats.methods || []).filter(m => m === 'GET /f1/LEAGUE/' + TEAM_ID).length, 1, 'only the page load itself, no second request for it');
+    assert.doesNotMatch(await page.locator('.ff-lineup').innerText(), /loading\.\.\./);
     await context.close();
   });
 });

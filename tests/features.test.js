@@ -18,7 +18,7 @@ describe('parsers and rules (pure functions, run in the page)', () => {
       const html = await (await fetch('/f1/111111/transactions')).text();
       return window.__FF_TEST__.api.parseTransactions(new DOMParser().parseFromString(html, 'text/html'));
     });
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 5);
     assert.deepEqual([rows[0].adds.map(x => x.name), rows[0].drops.map(x => x.name)], [['Brian Robinson'], ['Marvin Harrison Jr.']]);
     assert.deepEqual([rows[0].who, rows[0].when], ['Lazy Sundays', 'Oct 11, 10:53 am']);
     assert.equal(rows[0].adds[0].id, '34054');
@@ -156,10 +156,11 @@ describe('daily snapshots and trends', () => {
     const snap = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => /^ff:snap:/.test(k)))));
     assert.equal(snap.roster.length, 12);
     assert.deepEqual(Object.keys(snap.wire).sort(), ['K', 'QB', 'RB', 'TE', 'WR']);
-    assert.equal(snap.tx.length, 3, 'transactions parsed from the feed');
+    assert.equal(snap.tx.length, 5, 'transactions parsed from the feed');
     assert.ok(snap.sleeper.add24.length > 0 && Object.keys(snap.sleeper.names).length > 0);
     assert.ok(JSON.stringify(snap).length < 40000, 'a snapshot stays small');
-    assert.ok(snap.yahooRequests <= 6, `${snap.yahooRequests} Yahoo requests for the snapshot`);
+    assert.ok(snap.yahooRequests <= 6 + snap.dropChecks, `${snap.yahooRequests} Yahoo requests for the snapshot`);
+    assert.equal(snap.dropChecks, 2, 'only recent drops are checked');
     const n = calls(stats).length;
     await page.reload(); await page.addScriptTag({ content: CONTENT_JS });
     await waitForBoard(page); await page.waitForTimeout(1500);

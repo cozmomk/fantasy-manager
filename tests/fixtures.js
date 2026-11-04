@@ -41,7 +41,7 @@ export const players = [
   P(51, 'Brenton Strange', 'Jax', 'TE', { bye: 7, weeks: [6, 2, 3, 7], ros: [32, 5], status: 'W', depth: 'TE1' }),
   P(52, 'Tyler Higbee', 'LAR', 'TE', { bye: 8, weeks: [null, null, 5, 4], ros: [15, 2], status: 'FA', depth: 'TE2' }),
   P(60, 'Ryan Fitzgerald', 'Car', 'K', { bye: 8, weeks: [9, 10, 8, 12], ros: [10, 1], status: 'FA', depth: 'K1' }),
-  P(61, 'Chase McLaughlin', 'TB', 'K', { bye: 8, weeks: [8, 9, 9, 7], ros: [12, 0], status: 'W', depth: 'K1' }),
+  P(61, 'Chase McLaughlin', 'TB', 'K', { bye: 8, weeks: [8, 9, 9, 7], ros: [12, 0], status: 'W', depth: 'K1', proj: 11 }),
   // ---- injured and available (IR-eligible) ----
   P(70, 'Caleb Williams', 'Chi', 'QB', { bye: 5, weeks: [24, 22, null, null], ros: [60, 0], status: 'W', depth: 'QB1', inj: 'O', preRank: 30, note: 'Williams (shoulder) is expected to miss 3-4 weeks.' }),
   P(71, 'Pat Bryant', 'Den', 'WR', { bye: 10, weeks: [4, 2, 12, 5], ros: [5, -3], status: 'W', depth: 'WR3', inj: 'IR', note: 'Bryant (ankle) was placed on the Broncos\' injured reserve Friday.' }),
@@ -67,7 +67,7 @@ const statValue = (p, stat) => {
   if (stat === 'S_AL4W') return games(p) ? total(p) / games(p) : 0;
   const m = /^S_W_(\d)$/.exec(stat);
   if (m) { const v = p.weeks[+m[1] - 1]; return v === null || v === undefined ? null : v; }
-  return (games(p) ? total(p) / games(p) : 0) * 0.9;    // S_PW_5 projection
+  return p.proj ?? (games(p) ? total(p) / games(p) : 0) * 0.9;    // S_PW_5 projection
 };
 
 const statusHtml = p => p.mine ? `<a href="/f1/${LEAGUE_ID}/${TEAM_ID}">${TEAM_NAME}</a>` : (p.status === 'W' ? 'W (Oct 14)' : 'FA');
@@ -124,15 +124,22 @@ export function teamPage() {
 }
 
 export const noteJson = pid => {
+  if (DROPPED[pid]) return JSON.stringify({ content: `<div>${DROPPED[pid][0]} | Roster Status: Waivers (Nov 4) | % Ros ${DROPPED[pid][1]}% Rostered</div>`, hash: 'x', js: '', objects: [], errors: [] });
   const p = players.find(x => x.id === String(pid));
   const text = p && p.note ? p.note : (p ? `${p.name} caught two of three targets in Sunday's game.` : '');
   return JSON.stringify({ content: `<div class="noteitem"><span>Player Note</span> <span class="date">Today, 6:08 pm</span> ${esc(text)}</div>`, hash: 'x', js: '', objects: [], errors: [] });
 };
 
+// a date inside the alert window, written the way Yahoo writes it ("Nov 1, 9:59 am")
+const recent = new Date(Date.now() - 864e5).toLocaleString('en-US', { month: 'short', day: 'numeric' }) + ', 9:59 am';
+// player cards for the two players dropped above: one widely rostered, one not
+const DROPPED = { 777: ['Nico Collins', 100], 776: ['Deep Backup', 4] };
 export const transactionsPage = () => `<!doctype html><html><body><table>${[
   ['Brian Robinson', 'Atl - RB', 'Free Agent', 'Marvin Harrison Jr.', 'Hou - WR', 'To Waivers', 'Lazy Sundays Oct 11, 10:53 am', '34054', '40893'],
   ['Keon Coleman', 'Buf - WR', 'Free Agent', 'Jadarian Price', 'Sea - RB', 'To Waivers', 'Brain Trust Oct 11, 9:56 am', '1', '2'],
   ['Denzel Boston', 'Cle - WR', 'Waiver', '', '', '', 'ED SHEERAN HALFTIME SHOW Oct 10, 3:31 am', '3', ''],
+  ['Rashee Rice', 'KC - WR', 'Free Agent', 'Nico Collins', 'Hou - WR', 'To Waivers', 'Brain Trust ' + recent, '778', '777'],
+  ['Kendre Miller', 'NO - RB', 'Free Agent', 'Deep Backup', 'Jax - WR', 'To Waivers', 'Lazy Sundays ' + recent, '779', '776'],
 ].map(([a, at, as, d, dt, ds, meta, aid, did]) => `<tr><td><span title="Added Player"></span></td><td colspan="2">
   <div class="Pbot-xs"><a href="https://sports.yahoo.com/nfl/players/${aid}" target="sports">${a}</a> <span class="F-position Fz-xxs">${at}</span> <a class="yfa-icon playernote" data-ys-playerid="${aid}"></a><h6>${as} </h6></div>
   ${d ? `<div class="Pbot-xs"><a href="https://sports.yahoo.com/nfl/players/${did}" target="sports">${d}</a> <span class="F-position Fz-xxs">${dt}</span> <a class="yfa-icon playernote" data-ys-playerid="${did}"></a><h6>${ds} </h6></div>` : ''}
