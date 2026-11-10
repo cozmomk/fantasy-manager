@@ -123,6 +123,17 @@ export function teamPage() {
     ${t('statTable0', mine.filter(p => /^(QB|RB|WR|TE)$/.test(p.pos)))}${t('statTable1', mine.filter(p => p.pos === 'K'))}${t('statTable2', mine.filter(p => p.pos === 'DEF'))}</body></html>`;
 }
 
+// Yahoo's "Add Free Agent" page for one player: his name and "Team - Pos" up top, the week in the rankings box,
+// then your roster in drop tables with checkboxes (the tool never touches them)
+export function addPage(pid) {
+  const p = players.find(x => x.id === String(pid));
+  const mine = players.filter(x => x.mine);
+  return `<!doctype html><html><body><h2>Add Free Agent</h2>
+    <div><div><a class="name" href="https://sports.yahoo.com/nfl/players/${p.id}">${esc(p.name)}</a><a href="#">Player Note</a></div><div>${p.team} - ${p.pos}</div></div>
+    <table><tr><td>Projected Rankings</td><td>Transactions Trends</td></tr><tr><td>Week 5</td><td>Next 4 Wks</td></tr></table>
+    <form method="post" action="/f1/${LEAGUE_ID}/${TEAM_ID}/addplayer"><table class="statTable-drop">${mine.map(x => `<tr><td><input type="checkbox" name="dpid" value="${x.id}"></td><td>${nameCell(x)}</td></tr>`).join('')}</table></form></body></html>`;
+}
+
 export const noteJson = pid => {
   if (DROPPED[pid]) return JSON.stringify({ content: `<div>${DROPPED[pid][0]} | Roster Status: Waivers (Nov 4) | % Ros ${DROPPED[pid][1]}% Rostered</div>`, hash: 'x', js: '', objects: [], errors: [] });
   const p = players.find(x => x.id === String(pid));
@@ -167,6 +178,7 @@ export function yahooResponse(url) {
   if (path === `/f1/${LEAGUE_ID}/playernote`) return { type: 'application/json', body: noteJson(q.get('pid')) };
   if (path === `/f1/${LEAGUE_ID}/transactions`) return { type: 'text/html', body: transactionsPage() };
   if (path === `/f1/${LEAGUE_ID}/buzzindex`) return { type: 'text/html', body: buzzPage(q.get('pos') || 'WR') };
+  if (path === `/f1/${LEAGUE_ID}/addplayer`) return { type: 'text/html', body: addPage(q.get('apid')) };
   if (path === `/f1/${LEAGUE_ID}/settings`) return { type: 'text/html', body: settingsPage() };
   return null;
 }

@@ -79,6 +79,9 @@ describe('role reader subject check', () => {
     assert.equal((await r('Kamara (ankle) was ruled out. Kendre Miller is expected to lead the backfield in his absence.', 'Kendre Miller')).kind, 'up');
     const hedged = await r('If Hill is out, Waddle could be the No. 1 receiver.', 'Waddle');
     assert.deepEqual([hedged.kind, hedged.maybe], ['up', true], 'the "No. 1" is not treated as a sentence break');
+    const gb = 'Pierre Strong and Kaleb Johnson will be the team\'s complementary backfield options behind No. 1 option Josh Jacobs.';
+    assert.equal(await r(gb, 'Pierre Strong'), null, '"No. 1 option" belongs to the name after it');
+    assert.equal((await r(gb, 'Josh Jacobs')).kind, 'up');
     const down = await r('Walker could be stuck behind Mitchell on the depth chart.', 'Walker');
     assert.deepEqual([down.kind, down.maybe], ['down', true]);
     await context.close();

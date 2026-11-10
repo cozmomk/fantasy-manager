@@ -24,11 +24,12 @@
   try { if (linkedTeam) localStorage.setItem(teamKey, linkedTeam); else teamId = localStorage.getItem(teamKey); } catch (e) { /* ignore */ }
   if (!teamId) return;
   const league = { name: 'your league', teamId };   // the name comes from the league's settings, below
-  // pages the helper runs on: player lists, settings, the league home page, your own team page and the matchup page
+  // pages the helper runs on: player lists, settings, the league home page, your own team page, the matchup page and the add page
   const PATH = location.pathname;
   const onList = /\/(players|playersearch)(\/|$)/.test(PATH), onSettings = /\/settings/.test(PATH);
   const onTeam = new RegExp('^/f1/' + leagueId + '(/(' + league.teamId + '|matchup)(/|$)|/?$)').test(PATH);   // league home, your team, your matchup: Lineup first
-  if (!onList && !onSettings && !onTeam) return;
+  const onAdd = /\/addplayer\/?$/.test(PATH);   // Yahoo's page for adding one player: compare him with who you would drop
+  if (!onList && !onSettings && !onTeam && !onAdd) return;
   // Two copies on one page (for example an old install plus a newer one) would double every request.
   // The attribute lives on the shared DOM, so it is visible across the extension's isolated world and the page's.
   if (document.documentElement.dataset.ffLoaded) return;
@@ -214,7 +215,7 @@
   let weekGuessed = false;
   const readWeek = () => {
     const t = document.body.innerText;
-    const m = t.match(/Week (\d+) \(proj\)/) || t.match(/Week (\d+): [A-Z][a-z]{2} \d/) || t.match(/Week (\d+) stats/) || t.match(/Week (\d+) Matchups/);   // stats dropdown, the matchup/team header, or the league home's matchups box
+    const m = t.match(/Week (\d+) \(proj\)/) || t.match(/Week (\d+): [A-Z][a-z]{2} \d/) || t.match(/Week (\d+) stats/) || t.match(/Week (\d+) Matchups/) || t.match(/Week (\d+)\s+Next 4 Wks/);   // stats dropdown, the matchup/team header, the league home's matchups box, or the add page's rankings
     weekGuessed = !m;
     return m ? parseInt(m[1], 10) : DEFAULT_WEEK;
   };
@@ -429,15 +430,20 @@
   const byRecord = (a, b) => (a.m.good - b.m.good) || ((a.m.avg / a.m.thr || 0) - (b.m.avg / b.m.thr || 0));
 
   // ---- Start / sit: who should be in your lineup this week ----------------------------------------------
-  // Judged on consistent scoring (last 4 weeks, weighted toward the last 2), not on one-week projections.
+  // Judged on consistent scoring (last 4 weeks, weighted toward the last 2), not on one-week projections; kickers and defenses are the exception.
   const SUPERFLEX = 'Q/W/R/T';
   const FLEX = { [SUPERFLEX]: ['QB', 'RB', 'WR', 'TE'], 'W/R/T': ['RB', 'WR', 'TE'], 'W/R': ['RB', 'WR'], 'W/T': ['WR', 'TE'], 'R/T': ['RB', 'TE'] };
   const slotFits = (p, slot) => slot === p.pos || (FLEX[slot] || []).includes(p.pos);
   const startScore = p => { const a = p.m.avg, f = p.m.form; return isNaN(a) ? NaN : (isNaN(f) ? a : 0.6 * a + 0.4 * f); };
+  // kickers and defenses swing with the matchup, so their start/sit goes by Yahoo's projection for this week when both have one
+  const PROJ_POS = /^(K|DEF)$/, PROJ_EDGE = 1.5;
+  const byProjection = (b, s) => PROJ_POS.test(b.pos) && !isNaN(b.proj) && !isNaN(s.proj);
+  const startValue = p => (PROJ_POS.test(p.pos) && !isNaN(p.proj) ? p.proj : startScore(p));
   const availability = (p, week) => (p.slot === 'IR' ? 'ir' : p.out === 2 ? 'out' : p.out === 1 ? 'outweek' : p.bye === week ? 'bye' : p.injTag === 'Q' ? 'q' : 'ok');
   const AVAIL_TEXT = { ir: 'on IR', out: 'out for a long stretch', outweek: 'out this week', bye: 'on bye this week' };
   const canPlay = (p, week) => { const a = availability(p, week); return a === 'ok' || a === 'q'; };
   const betterToStart = (b, s) => {
+    if (byProjection(b, s)) return b.proj - s.proj >= PROJ_EDGE;
     const sb = startScore(b), ss = startScore(s);
     if (isNaN(sb) || isNaN(ss) || b.m.played < 2) return false;
     if (!(sb >= ss * (b.injTag === 'Q' ? 1.3 : 1.15) && sb - ss >= 2)) return false;   // a questionable bench player has to be clearly better
@@ -457,7 +463,7 @@
     const bench = players.filter(p => p.slot === 'BN');
     const used = new Set(), fixes = [], swaps = [];
     const best = (list, slot) => list.filter(b => !used.has(b.id) && canPlay(b, week) && slotFits(b, slot))
-      .sort((a, b) => ((a.injTag === 'Q' ? 1 : 0) - (b.injTag === 'Q' ? 1 : 0)) || ((isNaN(startScore(b)) ? -1 : startScore(b)) - (isNaN(startScore(a)) ? -1 : startScore(a))))[0];   // healthy first, then best scorer
+      .sort((a, b) => ((a.injTag === 'Q' ? 1 : 0) - (b.injTag === 'Q' ? 1 : 0)) || ((isNaN(startValue(b)) ? -1 : startValue(b)) - (isNaN(startValue(a)) ? -1 : startValue(a))))[0];   // healthy first, then best scorer (K/DEF: best projection)
     for (const s of starters) {                       // 1. starters who cannot play this week
       if (canPlay(s, week)) continue;
       const sub = best(bench, s.slot);
@@ -472,7 +478,7 @@
     const healthy = starters.filter(s => canPlay(s, week)), cands = [];
     for (const b of bench) {                           // 2. clear upgrades among healthy starters
       if (used.has(b.id) || !canPlay(b, week)) continue;
-      for (const s of healthy) if (slotFits(b, s.slot) && betterToStart(b, s)) cands.push({ b, s, gain: startScore(b) - startScore(s) });
+      for (const s of healthy) if (slotFits(b, s.slot) && betterToStart(b, s)) cands.push({ b, s, gain: byProjection(b, s) ? b.proj - s.proj : startScore(b) - startScore(s) });
     }
     cands.sort((x, y) => y.gain - x.gain);
     const usedS = new Set();
@@ -586,7 +592,36 @@
   };
   const TAG_LABEL = { producer: 'Consistent', rising: 'Rising', buzz: 'Hype, no record', spike: 'One-week spike', watch: 'Watch', out: 'Out / injured', wkout: 'Out this week', usage: 'Usage up' };
   let radarCache = { sig: '', list: null };
-  const PROJ_POS = /^(K|DEF)$/;
+  // o = his row from a Yahoo list (name, team, roster status, injury tag)
+  const wireCand = (id, o, pos, data, proj, SL) => {
+    const team = o._team || '';
+    const p = { id, name: o.name, pos, team, status: o['Roster Status'] || '', injTag: o._inj, data, mine: false };
+    p.m = metrics(id, pos, data, true);
+    p.bye = p.m.bye;
+    p.proj = proj[id] ? num(proj[id]['Fan Pts']) : NaN;
+    p.sl = slInfo(SL, o.name, pos, team);
+    p.m.sl = p.sl;
+    return p;
+  };
+  // One wire player who may be outside the best-available list (the add page). It reads the same list pages as the scan,
+  // which are cached by then, so it costs at most a request or two.
+  const loadOne = async (pl, week, SL) => {
+    const over = { status: 'A', pos: pl.pos, sort: 'AR', myteam: '0' };
+    const data = await analyze([pl.id], week, { weekly: over, research: { status: 'A', pos: pl.pos, myteam: '0' } }, 1, 2);
+    const proj = PROJ_POS.test(pl.pos) ? await fetchPage('S_PW_' + week, 0, { status: 'A', pos: pl.pos, sort: 'PTS', myteam: '0' }) : {};
+    const o = data.research[pl.id] || data.weekNums.map(w => data.weekly[w][pl.id]).find(Boolean) || {};
+    const p = wireCand(pl.id, { ...o, name: pl.name, _team: o._team || pl.team }, pl.pos, data, proj, SL);
+    refreshOut(p);
+    return p;
+  };
+  // Yahoo's add page: the player is the first name link, with "NE - WR" in an element of its own just after it
+  const readAddPlayer = () => {
+    const a = document.querySelector('a.name'), TP = /^([A-Za-z.]+) - (QB|RB|WR|TE|K|DEF)$/;
+    let n = a, m = null;
+    for (let i = 0; i < 5 && n && !m; i++) { n = n.parentElement; m = n && [...n.querySelectorAll('*')].map(e => TP.exec(txt(e))).find(Boolean); }
+    return m ? { id: playerId(a), name: txt(a), team: m[1], pos: m[2] } : null;
+  };
+
   const loadRadar = async (pos, week, SL) => {
     const sig = pos + '|' + week;
     if (radarCache.sig === sig) return radarCache.list;
@@ -613,16 +648,7 @@
     }
     const ids = Object.keys(cand);
     const data = await analyze(ids, week, { weekly: over, research: { status: 'A', pos, myteam: '0' } }, 1, 2);
-    const list = ids.map(id => {
-      const o = cand[id], team = o._team || '';
-      const p = { id, name: o.name, pos, team, status: o['Roster Status'] || '', injTag: o._inj, data, mine: false };
-      p.m = metrics(id, pos, data, true);
-      p.bye = p.m.bye;
-      p.proj = proj[id] ? num(proj[id]['Fan Pts']) : NaN;
-      p.sl = slInfo(SL, o.name, pos, team);
-      p.m.sl = p.sl;
-      return p;
-    });
+    const list = ids.map(id => wireCand(id, cand[id], pos, data, proj, SL));
     const pri = { producer: 0, rising: 0, buzz: 1, watch: 2, spike: 3, wkout: 4, out: 5 };
     const rankList = () => {
       list.forEach(refreshOut);
@@ -1185,7 +1211,7 @@
     });
     return wrap;
   };
-  const state = { cand: null, rep: null, view: onList ? 'wire' : 'lineup', stash: null, radarPos: null };
+  const state = { cand: null, rep: null, view: onList || onAdd ? 'wire' : 'lineup', stash: null, radarPos: null };
   const RADAR_POS = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
   let radarLoading = false;
   let trendData = null;   // { snaps, movers, streaks, txSummary }
@@ -1519,7 +1545,7 @@
     if (sumEl) { sumEl.className = kind; sumEl.textContent = headline; }
     b.appendChild(el('h3', null, 'Week ' + week + ' start / sit'));
     const box = el('div', 'ff-verdict ' + kind); box.append(el('div', 'hd', headline), el('div', null, sub)); b.appendChild(box);
-    b.appendChild(el('div', 'ff-hint', 'Judged on consistent scoring (last 4 weeks, weighted to the last 2), not Yahoo\'s one-week projections. Matchups and kickoff times are not considered. A bench player must beat a starter by 15% and 2 points, and a proven starter needs more.'));
+    b.appendChild(el('div', 'ff-hint', 'Judged on consistent scoring (last 4 weeks, weighted to the last 2), not Yahoo\'s one-week projections. Matchups and kickoff times are not considered. A bench player must beat a starter by 15% and 2 points, and a proven starter needs more. Kickers and defenses are the exception: they swing with the matchup, so they go by Yahoo\'s projection for this week (a ' + PROJ_EDGE + '-point edge to swap).'));
     if (!guarded) {
       L.fixes.concat(L.swaps).forEach(x => {
         const t = el('table', 'ff-cmp'), h = el('tr');
@@ -1650,11 +1676,18 @@
   const HEDGE = /\b(could|may|might|would|if|potentially|possibly|should|depending)\b/i;
   // Sentences, without splitting "No. 1" or an initial; a role phrase only counts in a sentence that names the player.
   const sentencesOf = t => t.replace(/\bNo\.\s*(\d)/g, 'No․ $1').split(/(?<=[.!?])\s+(?=[A-Z"'])/).map(x => x.replace(/․/g, '.'));
+  // "behind No. 1 option Josh Jacobs": a title like that belongs to the name right after it, not to anyone named before
+  const NAME_AT = /^\s+([A-Z][a-zA-Z'.-]+(?:\s+[A-Z][a-zA-Z'.-]+){1,2})/;
+  const titleOwner = (sent, m) => (/^(No\. 1|primary)/i.test(m[0]) && (NAME_AT.exec(sent.slice(m.index + m[0].length)) || [])[1]) || '';
+  // words between a player's name and a role-gain phrase that make him the other back ("complementary options behind No. 1 option")
+  const NOT_HIM = /\b(complementary|backup|behind|secondary|change-of-pace)\b/i;
   const roleOf = (text, name) => {
     const parts = (name || '').toLowerCase().replace(/[^a-z' ]/g, '').split(' ').filter(w => w.length >= 4 && !/^(jr|sr|iii)$/.test(w));
     for (const sent of sentencesOf(String(text || ''))) {
       if (parts.length && !parts.some(w => sent.toLowerCase().includes(w))) continue;
-      const up = ROLE_UP.exec(sent), down = ROLE_DOWN.exec(sent);
+      let up = ROLE_UP.exec(sent);
+      const down = ROLE_DOWN.exec(sent), owner = up && titleOwner(sent, up);
+      if (owner && parts.length && !parts.some(w => owner.toLowerCase().includes(w))) up = null;
       if (!up && !down) continue;
       const m = up && (!down || up.index <= down.index) ? up : down;
       return { kind: m === up ? 'up' : 'down', phrase: m[0], maybe: HEDGE.test(sent) };
@@ -1677,15 +1710,17 @@
       for (const sent of sentencesOf(h.d.text.replace(/Advice:\s*/, '. '))) {
         const m = ROLE_UP.exec(sent);
         if (!m) continue;
-        const before = sent.slice(0, m.index), re = /\b([A-Z][a-zA-Z'.-]+(?:\s+[A-Z][a-zA-Z'.-]+){1,2})/g;
+        const before = sent.slice(0, m.index), re = /\b([A-Z][a-zA-Z'.-]+(?:\s+[A-Z][a-zA-Z'.-]+){1,2})/g, owner = titleOwner(sent, m);
+        const named = owner ? [{ 1: owner, index: -1 }] : [];
         let x;
-        while ((x = re.exec(before))) {
+        while (!owner && (x = re.exec(before))) named.push(x);
+        for (x of named) {
           const ids = SL.byName[normName(x[1])];
           if (!ids || ids.length !== 1) continue;
           const p = SL.players[ids[0]];
           if (!/^(QB|RB|WR|TE)$/.test(p.p)) continue;
-          const lead = before.slice(Math.max(0, x.index - 10), x.index), tail = before.slice(x.index + x[1].length, x.index + x[1].length + 40);
-          if (/\b(with|while|after|without)\s+$/i.test(lead) || /^\s*(\([^)]*\)\s*)?(is |was |remains |has been )?(out|sidelined|injured|ruled out|placed|on (injured reserve|IR))\b/i.test(tail)) continue;
+          const lead = before.slice(Math.max(0, x.index - 10), Math.max(0, x.index)), tail = before.slice(x.index + x[1].length, x.index + x[1].length + 40);
+          if (x.index >= 0 && (/\b(with|while|after|without)\s+$/i.test(lead) || /^\s*(\([^)]*\)\s*)?(is |was |remains |has been )?(out|sidelined|injured|ruled out|placed|on (injured reserve|IR))\b/i.test(tail) || NOT_HIM.test(before.slice(x.index + x[1].length)))) continue;
           if (!out.has(ids[0])) out.set(ids[0], { name: p.n, pos: p.p, team: p.t, phrase: m[0], maybe: HEDGE.test(sent), sentence: sent.slice(0, 240), date: h.d.date });
         }
       }
@@ -1928,10 +1963,12 @@
       mark('sleeper ready');
       progStage('Reading your roster', 5);
       // offense first so the lineup shows quickly; kicker and defense stats follow in the background
-      const roster = await loadRoster(week, SL, onList ? listPos : 'O');
+      const addP = onAdd ? readAddPlayer() : null;
+      const roster = await loadRoster(week, SL, onList ? listPos : (addP ? addP.pos : 'O'));
       mark('roster loaded');
       progStage('Roster loaded', 35);
-      let radar = null;
+      let radar = null, addCand = null;
+      if (addP) state.radarPos = addP.pos;   // the add page: his position's wire, with him in the comparison
       if (onList && !state.radarPos && /^(QB|RB|WR|TE|K|DEF)$/.test(listPos)) state.radarPos = listPos;   // start where Yahoo's list is; change it in the tray
       if (onList && !state.radarPos && savedSel && /^(QB|RB|WR|TE|K|DEF)$/.test(savedSel.radarPos || '')) state.radarPos = savedSel.radarPos;   // a name search has no position in its address
       if (onList && !state.radarPos) { const top = needsOf(roster.players, week, SLOTS)[0]; if (top) state.radarPos = top.pos; }   // "All" list: start on what you need
@@ -1961,6 +1998,7 @@
           const c0 = savedSel.cand ? radar.find(q => q.id === savedSel.cand.id) : null;
           if (c0) state.cand = c0;
         }
+        if (addP) { addCand = radar.find(q => q.id === addP.id) || await loadOne(addP, week, SL); state.cand = addCand; }
         if (state.cand && state.cand.pos !== state.radarPos) state.cand = null;
         if (!state.cand) state.cand = radar.find(p => p.out === 0) || null;
       }
@@ -1968,10 +2006,10 @@
       mark('wire list shown');
       bar.textContent = 'Fantasy manager: decision board for ' + league.name + ', week ' + week + '. Data: Yahoo and Sleeper. Yahoo requests so far on this page: ' + yCount + '. Read the player note before you claim.';
       render();
-      if (cameBack) setTimeout(showResult, 50);   // back from a name search: show the comparison, not the top of the tray
+      if (cameBack || addCand) setTimeout(showResult, 50);   // back from a name search: show the comparison, not the top of the tray
       // notes first (they decide who is injured), then kicker and defense stats (about ten requests) in the background
       const notesDone = radar && radar.loadNotes
-        ? radar.loadNotes().then(() => { mark('notes loaded'); refreshNews(); if (board && board.radar === radar) { if (state.cand && state.cand.pos === state.radarPos && !radar.includes(state.cand)) state.cand = null; render(); } }).catch(() => {})
+        ? radar.loadNotes().then(() => { mark('notes loaded'); refreshNews(); if (board && board.radar === radar) { if (state.cand && state.cand !== addCand && state.cand.pos === state.radarPos && !radar.includes(state.cand)) state.cand = null; render(); } }).catch(() => {})
         : Promise.resolve();
       let kdDone = notesDone;
       if (!roster.kd) {
@@ -2038,7 +2076,7 @@
     }, 800);
   };
   if (TEST) {
-    TEST.api = { parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
+    TEST.api = { readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
       GOOD, formText, summarizeTx, computeMovers, computeStreaks, checkRoster, pct, normName, nameKey, roleOf, roleNews, outLevel, proven, parseRoster, compare, coversBye, surplusStarter, seasonDone, irOption, suggestReplace, computeLineup, emptySlots, needsOf, startScore, setSlots: v => { SLOTS = v; }, getPending: () => pending, metrics, state, getYahooCount: () => yCount };
   }
   // The first visit to a league reads its settings; after that they come from storage and are re-read weekly.

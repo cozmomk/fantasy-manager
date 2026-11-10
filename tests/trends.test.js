@@ -110,4 +110,20 @@ describe('Trends tab', () => {
     assert.deepEqual(players, ['Darius Cooper'], 'only the player gaining the work: not Thornton (out) or Raymond (named after the phrase)');
     await context.close();
   });
+
+  it('gives a "No. 1 option" title to the player named after it, not to the backups named before it', async () => {
+    const news = (url, b) => (/playernote/.test(url) && /pid=22\b/.test(url)
+      ? b.replace(/caught two of three targets[^"<]*/, 'is listed as questionable. Darius Cooper and Kalif Raymond will be the complementary options behind No. 1 option Roman Wilson')
+      : b);
+    const { page, context } = await openBoard(browser, { pos: 'WR', mutate: news });
+    await waitForBoard(page);
+    await page.locator('.ff-tabbtn', { hasText: 'Trends' }).click();
+    await page.waitForFunction(() => /behind No\. 1 option/.test(document.querySelector('.ff-board')?.innerText || ''), null, { timeout: 30000 });
+    const players = await page.$$eval('.ff-board table.ff-cmp', ts => {
+      const t = ts.find(x => /From the note/.test(x.innerText));
+      return t ? [...t.rows].slice(1).map(r => r.cells[0].querySelector('.ff-link').innerText.trim()) : null;
+    });
+    assert.deepEqual(players, ['Roman Wilson']);
+    await context.close();
+  });
 });

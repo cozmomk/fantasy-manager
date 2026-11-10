@@ -51,7 +51,7 @@ export function build(base = `http://localhost:${PORT}`) {
     '// @namespace    fantasy-manager',
     `// @version      ${version(fs.statSync(SRC).mtimeMs)}`,
     '// @description  Read-only decision board for your Yahoo Fantasy Football leagues. Never adds, drops or submits anything.',
-    '// @match        https://football.fantasysports.yahoo.com/f1/*',   // the script itself only acts on player lists, settings, the league home, your team and the matchup
+    '// @match        https://football.fantasysports.yahoo.com/f1/*',   // the script itself only acts on player lists, settings, the league home, your team, the matchup and the add page
     '// @run-at       document-idle',
     '// @grant        none',
     '// @noframes',

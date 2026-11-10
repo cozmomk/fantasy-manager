@@ -1,6 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { launch, openBoard, waitForBoard, waitIdle, teamUrl, listUrl, CONTENT_JS } from './helpers.js';
+import { launch, openBoard, waitForBoard, waitIdle, teamUrl, listUrl, api, CONTENT_JS } from './helpers.js';
 import { players, LEAGUE_ID, TEAM_ID } from './fixtures.js';
 
 let browser;
@@ -41,6 +41,16 @@ describe('start / sit rules (pure)', () => {
     const r = await lineup(page, [P('a', 'RB', 'RB', 8, { p: { out: 2 } }), P('b', 'WR', 'W/R/T', 8, { p: { out: 2 } }),
       P('x', 'RB', 'BN', 14), P('y', 'RB', 'BN', 9, { p: { out: 1 } }), P('z', 'RB', 'IR', 18)]);
     assert.deepEqual(r.fixes.map(f => f[2]), ['x', null]);
+  });
+  it('kickers and defenses go by this week\'s projection, not their record', async () => {
+    const boswell = await lineup(page, [P('k', 'K', 'K', 7.5, { p: { proj: 8.8 } }), P('k2', 'K', 'BN', 11.7, { good: 3, p: { proj: 7.5 } })]);
+    assert.deepEqual(boswell.swaps, [], 'a better record does not bench the kicker with the better matchup');
+    const swap = await lineup(page, [P('d', 'DEF', 'DEF', 9, { good: 3, p: { proj: 5.8 } }), P('d2', 'DEF', 'BN', 4, { p: { proj: 7.9 } })]);
+    assert.deepEqual(swap.swaps, [['DEF', 'd', 'd2']], 'a 2-point projected edge swaps');
+    const close = await lineup(page, [P('d', 'DEF', 'DEF', 4, { p: { proj: 7 } }), P('d2', 'DEF', 'BN', 12, { good: 4, p: { proj: 8 } })]);
+    assert.deepEqual(close.swaps, [], 'under 1.5 projected points is not enough');
+    const bye = await lineup(page, [P('k', 'K', 'K', 9, { p: { bye: 6 } }), P('a', 'K', 'BN', 12, { p: { proj: 6 } }), P('b', 'K', 'BN', 6, { p: { proj: 9 } })]);
+    assert.deepEqual(bye.fixes.map(f => f[2]), ['b'], 'the replacement for a kicker on bye is the best projected one');
   });
   it('ignores players without scoring data (kickers and defenses not loaded) and flags Questionable starters', async () => {
     const nodata = await lineup(page, [P('k', 'K', 'K', NaN), P('k2', 'K', 'BN', NaN)]);
@@ -351,6 +361,29 @@ describe('free adds', () => {
     assert.match(t, /Just dropped in your league: Nico Collins/);
     assert.match(t, /Nico Collins \(Hou - WR\): 100% rostered across Yahoo, dropped by Brain Trust .*now on Waivers \(Nov 4\)/);
     assert.doesNotMatch(t, /Deep Backup|Marvin Harrison/);
+    await context.close();
+  });
+});
+
+describe('the add page', () => {
+  const addUrl = pid => `https://football.fantasysports.yahoo.com/f1/${LEAGUE_ID}/addplayer?apid=${pid}`;
+  it('opens on the comparison for the player being added', async () => {
+    const { page, context, stats } = await openBoard(browser, { url: addUrl(50) });
+    await waitForBoard(page);
+    await page.waitForSelector('#ff-body .ff-verdict');
+    const t = await page.locator('#ff-tray').innerText();
+    assert.match(t, /ADD: Michael Mayer \(TE\)/);
+    assert.match(t, /2\. Best available TE/i);
+    assert.doesNotMatch(t, /Could not read the current week/);
+    assert.equal(stats.methods.filter(m => m.startsWith('POST')).length, 0, 'never submits the add form');
+    await context.close();
+  });
+  it('reads the player off the page, and builds him the same way the wire scan does', async () => {
+    const { page, context } = await openBoard(browser, { url: addUrl(43) });
+    await waitForBoard(page);
+    assert.deepEqual(await api(page, 'readAddPlayer'), { id: '43', name: 'Kalif Raymond', team: 'Chi', pos: 'WR' });
+    const one = await page.evaluate(() => window.__FF_TEST__.api.loadOne({ id: '43', name: 'Kalif Raymond', team: 'Chi', pos: 'WR' }, 5, null).then(p => [p.status, p.m.good, p.m.played, p.m.weeks]));
+    assert.deepEqual(one, ['W (Oct 14)', 2, 3, [8, 4, 15, NaN]]);
     await context.close();
   });
 });
