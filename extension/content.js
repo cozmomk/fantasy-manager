@@ -1728,14 +1728,20 @@
     return [...out.values()];
   };
   // Players free in THIS league, from pages the board already saved (free-agent lists and the buzz index): no extra requests.
+  // Only recent pages count: a page saved weeks ago still lists players who have been claimed since.
+  const FREE_LIST_HOURS = 6;
   const availableNames = () => {
     const set = new Set();
     let keys = [];
     try { keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX)); } catch (e) { return set; }
     for (const k of keys) {
       try {
-        if (k.includes('/f1/' + leagueId + '/players?') && /[?&]status=A(&|$|\|)/.test(k)) Object.values(JSON.parse(localStorage.getItem(k)).d || {}).forEach(o => { if (o && o.name) set.add(normName(o.name)); });
-        else if (k.startsWith(CACHE_PREFIX + 'buzz:' + leagueId + ':')) (JSON.parse(localStorage.getItem(k)).d || []).forEach(r => set.add(normName(r.name)));
+        const list = k.includes('/f1/' + leagueId + '/players?') && /[?&]status=A(&|$|\|)/.test(k), buzz = k.startsWith(CACHE_PREFIX + 'buzz:' + leagueId + ':');
+        if (!list && !buzz) continue;
+        const h = JSON.parse(localStorage.getItem(k));
+        if (!h || Date.now() - h.t > FREE_LIST_HOURS * 3600000) continue;
+        if (list) Object.values(h.d || {}).forEach(o => { if (o && o.name) set.add(normName(o.name)); });
+        else (h.d || []).forEach(r => set.add(normName(r.name)));
       } catch (e) { /* skip a bad entry */ }
     }
     return set;

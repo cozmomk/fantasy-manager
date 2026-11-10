@@ -25,6 +25,23 @@ describe('per-league role news alert', () => {
     await context.close();
   });
 
+  it('a free-agent page saved long ago does not make a since-claimed player look free', async () => {
+    // Darius Cooper is gone from today's lists (claimed); only an old Transaction Trends page still lists him
+    const claimed = (url, b) => withNews('Darius Cooper')(url, /\/players\?/.test(url) ? b.replace(/<tr>(?:(?!<tr>).)*?Darius Cooper.*?<\/tr>/g, '') : b);
+    const run = async ageHours => {
+      const context = await browser.newContext();
+      await context.addInitScript(t => { localStorage.setItem('ffc3:buzz:111111:WR:old', JSON.stringify({ t, d: [{ name: 'Darius Cooper' }] })); }, Date.now() - ageHours * 3600000);
+      const { page } = await openBoard(browser, { pos: 'WR', mutate: claimed, context });
+      await waitForBoard(page);
+      await page.waitForTimeout(1500);
+      const n = await banner(page).count();
+      await context.close();
+      return n;
+    };
+    assert.equal(await run(48), 0, 'a two-day-old page is not trusted');
+    assert.equal(await run(1), 1, 'an hour-old page still counts');
+  });
+
   it('a player already on your roster is not announced', async () => {
     const { page, context } = await openBoard(browser, { pos: 'WR', mutate: withNews('Terry McLaurin') });
     await waitForBoard(page);
