@@ -47,14 +47,14 @@ export async function openBoard(browser, opts = {}) {
     stats.blockedExternal.push(url);          // nothing else may leave the browser
     return route.abort();
   });
-  await page.addInitScript(({ gapMs, snapDelayMs, sync, slots, league, team, firstVisit }) => {
-    window.__FF_TEST__ = { gapMs, snapDelayMs };
+  await page.addInitScript(({ gapMs, snapDelayMs, sync, slots, league, team, firstVisit, now }) => {
+    window.__FF_TEST__ = { gapMs, snapDelayMs, now };
     try { if (slots) localStorage.setItem('ff:slots:' + league, JSON.stringify(slots)); } catch (e) { /* ignore */ }   // as if the league settings page had been read
     try {   // as if the league had been visited before; firstVisit skips this
       if (!firstVisit && !sessionStorage.getItem('ff:seeded')) { sessionStorage.setItem('ff:seeded', '1'); localStorage.setItem('ff:team:' + league, team); localStorage.setItem('ff:cfg:' + league, JSON.stringify({ name: 'Test League', playoffStart: 15, rec: 0, t: Date.now(), v: 2 })); }
     } catch (e) { /* ignore */ }
     try { if (!localStorage.getItem('ff:ui')) localStorage.setItem('ff:ui', JSON.stringify({ w: 560, open: true, sync })); } catch (e) { /* ignore */ }   // page-reloading sync is off unless a test asks for it
-  }, { gapMs: opts.gapMs ?? 5, snapDelayMs: opts.snapDelayMs ?? 60000, sync: !!opts.sync, slots: opts.slots || null, league: LEAGUE_ID, team: TEAM_ID, firstVisit: !!opts.firstVisit });
+  }, { gapMs: opts.gapMs ?? 5, snapDelayMs: opts.snapDelayMs ?? 60000, sync: !!opts.sync, slots: opts.slots || null, league: LEAGUE_ID, team: TEAM_ID, firstVisit: !!opts.firstVisit, now: opts.now || 0 });
   await page.goto(opts.url || listUrl(opts.pos || 'WR'));
   if (opts.load !== false) await page.addScriptTag({ content: CONTENT_JS });
   return { page, context, stats };

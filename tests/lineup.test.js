@@ -356,12 +356,139 @@ describe('free adds', () => {
   it('flags a widely rostered player dropped in the last few days, and skips the rest', async () => {
     const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID), snapDelayMs: 100 });
     await waitForBoard(page, { radar: false });
+    await page.locator('.ff-opp > .ff-more').waitFor({ timeout: 30000 });   // the alert lives in the collapsed Opportunities strip
+    await page.locator('.ff-opp > .ff-more').click();
     await page.waitForFunction(() => /Just dropped/.test(document.getElementById('ff-tray').innerText), null, { timeout: 30000 });
     const t = await lineupText(page);
     assert.match(t, /Just dropped in your league: Nico Collins/);
     assert.match(t, /Nico Collins \(Hou - WR\): 100% rostered across Yahoo, dropped by Brain Trust .*now on Waivers \(Nov 4\)/);
     assert.doesNotMatch(t, /Deep Backup|Marvin Harrison/);
     await context.close();
+  });
+});
+
+describe('game day: kickoff order, locked players, questionable starters', () => {
+  // kickoff keys: minutes from Thursday 00:00 of the NFL week
+  const THU_515P = 1035, SUN_10A = 4920, SUN_1P = 5100, SUN_105P = 5105, SUN_125P = 5125, SUN_425P = 5305;
+  const K = (id, pos, slot, avg, key, o = {}) => P(id, pos, slot, avg, { ...o, p: { kick: key == null ? null : { key }, ...(o.p || {}) } });
+  const plan = (page, players, now = 0) => page.evaluate(([pl, n]) => {
+    const api = window.__FF_TEST__.api, L = api.computeLineup(pl, 6), G = api.gamePlan(pl, 6, L, n || Date.parse('2026-11-10T12:00:00'));
+    return { tips: G.tips.map(t => [t.flex, t.early.id, t.late.id]), rows: G.rows.map(r => ({ q: r.q.id, backup: r.backup && r.backup.id, decideBy: r.decideBy, knowAt: r.knowAt, blind: r.blind, passed: r.passed, practice: r.practice })),
+      benched: G.benched.map(p => p.id), moves: [...G.moves.entries()] };
+  }, [players, now]);
+  let page, context;
+  before(async () => { ({ page, context } = await openBoard(browser, { pos: 'WR' })); await waitForBoard(page); });
+  after(async () => { await context.close(); });
+
+  it('reads kickoff order and times, and treats anything but a scheduled game or a bye as started', async () => {
+    const r = await page.evaluate(() => {
+      const a = window.__FF_TEST__.api, k = l => a.parseKick(l).key;
+      return { order: [k('Thu 5:15 pm vs Was'), k('Sun 1:00 pm @ Kc'), k('Mon 5:15 pm vs LAC')],
+        inactives: [a.kickText(k('Sun 1:05 pm vs Sea') - 90), a.kickText(k('Thu 5:15 pm vs Was') - 90), a.kickText(k('Sun 12:30 pm vs NE') - 90)],
+        locked: ['Final W 24-19 @ Mia', 'W 7-3 2nd', 'Sun 1:05 pm vs Sea', 'Bye - No game this week', ''].map(a.lockedLine) };
+    });
+    assert.ok(r.order[0] < r.order[1] && r.order[1] < r.order[2]);
+    assert.deepEqual(r.inactives, ['Sun 11:35 am', 'Thu 3:45 pm', 'Sun 11:00 am']);
+    assert.deepEqual(r.locked, [true, true, false, false, false]);
+  });
+  it('with only a reorder to suggest, the headline says the lineup is right and counts it', async () => {
+    const pl = [K('f', 'RB', 'W/R/T', 10, THU_515P), K('d', 'RB', 'RB', 10, SUN_1P)];
+    const h = await page.evaluate(([x]) => { const a = window.__FF_TEST__.api; return a.gamePlan(x, 6, a.computeLineup(x, 6), Date.parse('2026-11-10T12:00:00')).tips.length; }, [pl]);
+    assert.equal(h, 1);
+  });
+  it('never moves a player whose game has started', async () => {
+    const out = await lineup(page, [K('s', 'RB', 'RB', 10, SUN_1P, { p: { out: 1, locked: true } }), K('b', 'RB', 'BN', 12, SUN_1P)]);
+    assert.deepEqual(out.fixes, [], 'a locked starter who is out cannot be benched');
+    const played = await lineup(page, [K('s', 'WR', 'WR', 8, SUN_1P), K('b', 'WR', 'BN', 14, null, { good: 3, p: { locked: true } })]);
+    assert.deepEqual(played.swaps, [], 'a bench player who already played is never started');
+  });
+  it('the flex tip reads the lineup after the fixes above it, and names each player once', async () => {
+    const afterFix = await plan(page, [K('r1', 'RB', 'RB', 10, SUN_1P, { p: { bye: 6 } }), K('f', 'RB', 'W/R/T', 10, THU_515P), K('b', 'RB', 'BN', 9, SUN_105P)]);
+    assert.deepEqual(afterFix.tips, [['W/R/T', 'f', 'b']], 'the bench RB started by the bye fix is the later game to put in the flex');
+    assert.deepEqual(Object.fromEntries(afterFix.moves), { r1: 'BN', f: 'RB', b: 'W/R/T' });
+    const two = await plan(page, [K('x', 'RB', 'Q/W/R/T', 10, THU_515P), K('y', 'RB', 'W/R/T', 10, THU_515P + 30), K('z', 'RB', 'RB', 10, SUN_1P)]);
+    assert.equal(two.tips.length, 1, 'two flex slots cannot both claim the same late RB');
+    const none = await plan(page, [K('f', 'RB', 'W/R/T', 10, SUN_1P), K('d', 'RB', 'RB', 10, SUN_1P), K('t', 'TE', 'TE', 10, null)]);
+    assert.deepEqual(none.tips, [], 'same kickoff, or no game line: no tip');
+  });
+  it('questionable starters: backups are not shared, the deadline is when you can last act, and a passed deadline says so', async () => {
+    const note = { date: 'Yesterday, 4:16 pm', text: 'Pickens caught three passes. He was limited in practice Wednesday. Advice: keep an eye on him.' };
+    const r = await plan(page, [K('q1', 'WR', 'WR', 10, SUN_125P, { p: { injTag: 'Q', note } }), K('q2', 'WR', 'W/R/T', 10, SUN_425P, { p: { injTag: 'Q' } }), K('bk', 'WR', 'BN', 8, SUN_105P)]);
+    assert.deepEqual(r.rows.map(x => [x.q, x.backup, x.decideBy, x.knowAt, x.blind]), [['q1', 'bk', SUN_105P, SUN_125P - 90, false], ['q2', null, SUN_425P, SUN_425P - 90, false]]);
+    assert.match(r.rows[0].practice, /limited in practice Wednesday/);
+    const blind = await plan(page, [K('q', 'WR', 'WR', 10, SUN_125P, { p: { injTag: 'Q' } }), K('bk', 'WR', 'BN', 8, SUN_10A)]);
+    assert.deepEqual([blind.rows[0].blind, blind.rows[0].decideBy], [true, SUN_10A], 'the backup plays before the inactives: decide before you know');
+    const late = await page.evaluate(k => window.__FF_TEST__.api.kickDate(k, Date.parse('2026-11-10T12:00:00')) + 60000, SUN_105P);
+    const passed = await plan(page, [K('q1', 'WR', 'WR', 10, SUN_125P, { p: { injTag: 'Q' } }), K('bk', 'WR', 'BN', 8, SUN_105P)], late);
+    assert.equal(passed.rows[0].passed, true);
+    const swapped = await plan(page, [K('q', 'WR', 'WR', 5, SUN_1P, { p: { injTag: 'Q' } }), K('g', 'WR', 'BN', 14, SUN_1P, { good: 4 })]);
+    assert.deepEqual([swapped.rows, swapped.benched], [[], ['q']], 'a swap that benches him removes his row and says why');
+  });
+  it('a kickoff counts as a roster change, so an open tab redraws', async () => {
+    const page2 = (line) => `<table id="statTable0"><tr><th>Pos</th><th>Bye</th></tr><tr><td>WR</td><td><a class="name" href="https://sports.yahoo.com/nfl/players/9">T</a><span class="Fz-xxs">Was - WR</span><span class="ysf-player-detail Fz-xxs">${line}</span></td><td>7</td></tr></table>`;
+    const [a, b] = await page.evaluate(([x, y]) => [window.__FF_TEST__.api.rosterSig(x), window.__FF_TEST__.api.rosterSig(y)], [page2('Sun 1:00 pm vs Kc'), page2('Final W 24-19 vs Kc')]);
+    assert.notEqual(a, b);
+  });
+});
+
+describe('game day on the team page', () => {
+  const NOW = Date.parse('2026-11-10T12:00:00');   // a Tuesday: every game this week is still ahead
+  const tweak = () => {
+    const by = id => players.find(p => p.id === id), saved = ['1', '3', '7'].map(id => ({ ...by(id) }));
+    by('7').gameLine = 'Thu 5:15 pm vs Was';                   // Trey McBride, in the W/R/T slot, plays Thursday
+    by('1').gameLine = 'Final W 24-19 @ Mia';                  // Joe Burrow's game is over
+    by('3').inj = 'Q'; by('3').note = 'Allen was limited in practice Wednesday with a sore ankle.';
+    return () => saved.forEach(s => Object.assign(by(s.id), s, s.gameLine ? {} : { gameLine: undefined }));
+  };
+  it('shows the flex tip, the locked player and a plan for the questionable starter, with no extra requests', async () => {
+    const restore = tweak();
+    try {
+      const { page, context, stats } = await openBoard(browser, { url: teamUrl(TEAM_ID), now: NOW });
+      await waitForBoard(page, { radar: false });
+      await page.waitForFunction(() => /Before kickoff/i.test(document.querySelector('.ff-board')?.innerText || ''), null, { timeout: 20000 });
+      const t = await page.locator('.ff-board').innerText();
+      assert.match(t, /DO NOW[\s\S]*BEFORE KICKOFF[\s\S]*OPTIONAL[\s\S]*YOUR LINEUP/i, 'groups in their fixed order');
+      assert.match(t, /Next: decide Braelon Allen by Sun 1:00 pm · as of/);
+      assert.match(t, /Flex order: put Trey McBride \(Thu 5:15 pm\) at TE and Brock Bowers \(Sun 1:00 pm\) at W\/R\/T/);
+      assert.match(t, /Braelon Allen \(RB, RB\) · Questionable/);
+      assert.match(t, /If out, nobody left on your bench can cover him/);
+      assert.match(await page.locator('.ff-row', { hasText: 'Braelon Allen' }).textContent(), /limited in practice Wednesday/);
+      assert.match(await page.locator('.ff-lineup tr', { hasText: 'Joe Burrow' }).innerText(), /Played/);
+      assert.match(await page.locator('.ff-lineup tr', { hasText: 'Trey McBride' }).innerText(), /→ TE/);
+      assert.match(await page.locator('#ff-sum').innerText(), /Next: decide Braelon Allen/);
+      const notes = stats.yahoo.map(r => r.url).filter(u => /playernote/.test(u));
+      assert.equal(notes.length, new Set(notes).size, 'no note is requested twice');
+      // the button names who you are covering, and the wire tab offers the way back
+      await page.getByText('Find a RB for Braelon Allen').click();
+      await page.getByText('Covering Braelon Allen (RB, RB)').waitFor({ timeout: 20000 });
+      await page.getByText('← Back to lineup').click();
+      await page.waitForFunction(() => /Before kickoff/i.test(document.querySelector('.ff-board')?.innerText || ''));
+      // keyboard: "How this is judged" opens, and stays open when the tab redraws
+      await page.locator('.ff-judged-btn').focus();
+      await page.keyboard.press('Enter');
+      assert.equal(await page.locator('.ff-judged-btn').getAttribute('aria-expanded'), 'true');
+      await api(page, 'rerender');
+      assert.equal(await page.locator('.ff-judged-btn').getAttribute('aria-expanded'), 'true');
+      assert.match(await page.locator('.ff-judged').innerText(), /Players whose game has started are never moved/);
+      await context.close();
+    } finally { restore(); }
+  });
+  it('at a narrow width, the deadline stays on screen and the details open on demand', async () => {
+    const restore = tweak();
+    try {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      await context.addInitScript(() => { try { localStorage.setItem('ff:ui', JSON.stringify({ w: 400, open: true })); } catch (e) { /* ignore */ } });
+      const { page } = await openBoard(browser, { url: teamUrl(TEAM_ID), now: NOW, context });
+      await waitForBoard(page, { radar: false });
+      const row = page.locator('.ff-row', { hasText: 'Braelon Allen' });
+      await row.waitFor({ timeout: 20000 });
+      assert.match(await row.innerText(), /nobody left on your bench/);
+      assert.doesNotMatch(await row.innerText(), /limited in practice/, 'line 3 is folded at narrow widths');
+      await row.locator('.ff-more').click();
+      assert.match(await row.innerText(), /limited in practice/);
+      assert.match(await page.locator('.ff-lineup tr', { hasText: 'Trey McBride' }).innerText(), /Thu 5:15 pm/, 'a kickoff pill for a player the advice names');
+      await context.close();
+    } finally { restore(); }
   });
 });
 

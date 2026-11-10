@@ -11,14 +11,21 @@ const withNews = who => (url, b) => (/playernote/.test(url)
   ? b.replace('caught two of three targets', `caught two of three targets. While Tyquan Thornton is out, ${who} will handle more reps. He also`)
   : b);
 const banner = page => page.locator('.ff-news');
+// role news sits in the collapsed "Opportunities" strip under the tabs: open it, then read the banner
+const openNews = async page => {
+  await page.locator('.ff-opp > .ff-more').waitFor({ timeout: 30000 });
+  if (await page.locator('.ff-opp > .ff-more').getAttribute('aria-expanded') !== 'true') await page.locator('.ff-opp > .ff-more').click();
+  await banner(page).first().waitFor({ timeout: 30000 });
+};
 
 describe('per-league role news alert', () => {
   it('a free player named for more work in a recent note shows at the top of the tray, with the sentence', async () => {
     const { page, context } = await openBoard(browser, { pos: 'WR', mutate: withNews('Darius Cooper') });
     await waitForBoard(page);
-    await banner(page).waitFor({ timeout: 30000 });
+    await openNews(page);
     const t = await banner(page).innerText();
     assert.match(t, /Role news: free in/i);
+    assert.match(await page.locator('.ff-opp > .ff-more').innerText(), /Opportunities · 1/);
     assert.match(t, /Darius Cooper \(WR, PHI\) is named for "more reps"/);
     assert.match(t, /While Tyquan Thornton is out, Darius Cooper will handle more reps/);
     assert.doesNotMatch(t, /Tyquan Thornton \(/, 'the injured player is not the news');
@@ -53,7 +60,7 @@ describe('per-league role news alert', () => {
   it('"Got it" dismisses the alert, and it stays dismissed after a reload', async () => {
     const { page, context } = await openBoard(browser, { pos: 'WR', mutate: withNews('Darius Cooper') });
     await waitForBoard(page);
-    await banner(page).waitFor({ timeout: 30000 });
+    await openNews(page);
     await banner(page).getByText('Got it').click();
     assert.equal(await banner(page).count(), 0);
     await page.reload(); await page.addScriptTag({ content: CONTENT_JS });

@@ -123,7 +123,30 @@ Then open `http://localhost:8787/fantasy-manager.user.js` in Chrome and click In
 
 ## Lineup tab (start / sit)
 
-On the league home page, your team page and the matchup page the tray opens on **Lineup**: starters who are out or on bye this week, the best healthy bench player for each slot, and clear upgrades (a bench player must beat a starter by 15% and 2 points; a proven starter needs more). It uses consistent scoring (last 4 weeks, weighted to the last 2), not one-week projections, and does not consider opponents or kickoff times. Kickers and defenses are the exception: they swing with the matchup, so start/sit for them goes by Yahoo's projection for the week, and a bench kicker or defense must be projected 1.5 points higher to swap in. The script now matches all `/f1/*` pages but only acts on player lists, settings, the league home page, your own team, the matchup and Yahoo's add page. On Yahoo's add page for a player (`addplayer?apid=...`) the tray opens on **Add / replace** with that player already compared against the roster player you would most likely drop, and the best available list for his position above it. It reads his weeks from the same list pages the wire scan uses, so it usually costs no extra requests, and it never touches Yahoo's drop checkboxes or Add button. At M and L widths the lineup table also shows Yahoo's projection (for reference only), the game and, at L, % started.
+On the league home page, your team page and the matchup page the tray opens on **Lineup**: starters who are out or on bye this week, the best healthy bench player for each slot, and clear upgrades (a bench player must beat a starter by 15% and 2 points; a proven starter needs more). It uses consistent scoring (last 4 weeks, weighted to the last 2), not one-week projections, and does not consider opponents. Kickers and defenses are the exception: they swing with the matchup, so start/sit for them goes by Yahoo's projection for the week, and a bench kicker or defense must be projected 1.5 points higher to swap in. The script now matches all `/f1/*` pages but only acts on player lists, settings, the league home page, your own team, the matchup and Yahoo's add page. On Yahoo's add page for a player (`addplayer?apid=...`) the tray opens on **Add / replace** with that player already compared against the roster player you would most likely drop, and the best available list for his position above it. It reads his weeks from the same list pages the wire scan uses, so it usually costs no extra requests, and it never touches Yahoo's drop checkboxes or Add button. At M and L widths the lineup table also shows Yahoo's projection (for reference only), the game and, at L, % started.
+
+## Game day on the Lineup tab
+
+The Lineup tab is laid out in a fixed order: the verdict, **Do now** (fixes and swaps to make in Yahoo), **Before
+kickoff** (a plan for each questionable starter), **Optional** (flex order, IR, open roster spot), then your lineup.
+The rules sit behind "How this is judged" at the bottom.
+
+- **Next deadline.** Under the verdict (and in the tray's summary line): "Next: decide Pickens by Sun 1:05 pm", or
+  "Nothing to decide", with the time the advice was drawn.
+- **Players whose game has started are never moved.** A game line that is not a scheduled kickoff or a bye counts as
+  started: the lineup table says "Played" (Final), "Playing" (a score) or "Locked: check Yahoo" (anything else, such as
+  a postponed game). Returning to an open tab after a kickoff redraws it, keeping your place.
+- **Flex order.** When your flex holds an early game and a same-position starter plays later, the tab suggests swapping
+  their slots: it costs nothing and keeps the flex open longer, so a late scratch can be covered by any eligible player.
+- **Questionable starters.** One row each, earliest kickoff first: the backup to start if he sits (never one already
+  starting or promised to another row), the last moment you can act (when he or his backup kicks off), when you'll know
+  (inactives, 90 minutes before his kickoff), and the latest practice sentence from his note. If the backup plays before
+  the inactives come out, it says you must decide before you know. A deadline that has passed is greyed out.
+- Rows the advice changes are tagged in the lineup table ("→ RB", "→ bench"). At narrow widths the details fold
+  behind "More" and players named in the advice show their kickoff time.
+- Role news and "just dropped" alerts share one "Opportunities" line under the tabs; open it to read them.
+
+All of this reads the team page and notes the board already loads: it makes no extra Yahoo requests.
 
 ## Sharing with a friend
 

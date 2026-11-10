@@ -442,6 +442,26 @@
   const availability = (p, week) => (p.slot === 'IR' ? 'ir' : p.out === 2 ? 'out' : p.out === 1 ? 'outweek' : p.bye === week ? 'bye' : p.injTag === 'Q' ? 'q' : 'ok');
   const AVAIL_TEXT = { ir: 'on IR', out: 'out for a long stretch', outweek: 'out this week', bye: 'on bye this week' };
   const canPlay = (p, week) => { const a = availability(p, week); return a === 'ok' || a === 'q'; };
+  // Kickoff order. Yahoo writes a scheduled game as "Sun 1:05 pm vs Sea", in your time zone. Any other game line that is
+  // not a bye (a live score, "Final ...", a postponed game) means he cannot be planned around: he is locked, never moved.
+  const KICK_RE = /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (\d{1,2}):(\d\d) ([ap]m) (?:vs|@) /;
+  const WEEK_DAYS = ['Thu', 'Fri', 'Sat', 'Sun', 'Mon', 'Tue', 'Wed'];   // an NFL week runs Thursday to Monday; Tue/Wed only for a moved game
+  const parseKick = line => {
+    const m = KICK_RE.exec(line || '');
+    return m ? { key: WEEK_DAYS.indexOf(m[1]) * 1440 + ((+m[2] % 12) + (m[4] === 'pm' ? 12 : 0)) * 60 + +m[3] } : null;
+  };
+  const lockedLine = line => !!line && !/^Bye\b/.test(line) && !KICK_RE.test(line);
+  const kickText = key => {
+    const d = Math.floor(key / 1440), mm = key - d * 1440, h = Math.floor(mm / 60);
+    return WEEK_DAYS[(d % 7 + 7) % 7] + ' ' + ((h % 12) || 12) + ':' + String(mm % 60).padStart(2, '0') + ' ' + (h < 12 ? 'am' : 'pm');
+  };
+  // the computer's clock time of a kickoff key: the NFL week starts on the Tuesday before Thursday's game
+  const kickDate = (key, now) => {
+    const t = new Date(now); t.setHours(0, 0, 0, 0);
+    while (t.getDay() !== 2) t.setDate(t.getDate() - 1);
+    t.setDate(t.getDate() + 2 + Math.floor(key / 1440)); t.setMinutes(key - Math.floor(key / 1440) * 1440);
+    return t.getTime();
+  };
   const betterToStart = (b, s) => {
     if (byProjection(b, s)) return b.proj - s.proj >= PROJ_EDGE;
     const sb = startScore(b), ss = startScore(s);
@@ -462,10 +482,10 @@
     const starters = players.filter(p => !/^(BN|IR)$/.test(p.slot));
     const bench = players.filter(p => p.slot === 'BN');
     const used = new Set(), fixes = [], swaps = [];
-    const best = (list, slot) => list.filter(b => !used.has(b.id) && canPlay(b, week) && slotFits(b, slot))
+    const best = (list, slot) => list.filter(b => !used.has(b.id) && !b.locked && canPlay(b, week) && slotFits(b, slot))
       .sort((a, b) => ((a.injTag === 'Q' ? 1 : 0) - (b.injTag === 'Q' ? 1 : 0)) || ((isNaN(startValue(b)) ? -1 : startValue(b)) - (isNaN(startValue(a)) ? -1 : startValue(a))))[0];   // healthy first, then best scorer (K/DEF: best projection)
     for (const s of starters) {                       // 1. starters who cannot play this week
-      if (canPlay(s, week)) continue;
+      if (canPlay(s, week) || s.locked) continue;   // a locked starter cannot be moved; the lineup table labels him
       const sub = best(bench, s.slot);
       if (sub) used.add(sub.id);
       fixes.push({ slot: s.slot, sit: s, start: sub || null, why: AVAIL_TEXT[availability(s, week)] });
@@ -477,8 +497,8 @@
     }
     const healthy = starters.filter(s => canPlay(s, week)), cands = [];
     for (const b of bench) {                           // 2. clear upgrades among healthy starters
-      if (used.has(b.id) || !canPlay(b, week)) continue;
-      for (const s of healthy) if (slotFits(b, s.slot) && betterToStart(b, s)) cands.push({ b, s, gain: byProjection(b, s) ? b.proj - s.proj : startScore(b) - startScore(s) });
+      if (used.has(b.id) || b.locked || !canPlay(b, week)) continue;
+      for (const s of healthy) if (!s.locked && slotFits(b, s.slot) && betterToStart(b, s)) cands.push({ b, s, gain: byProjection(b, s) ? b.proj - s.proj : startScore(b) - startScore(s) });
     }
     cands.sort((x, y) => y.gain - x.gain);
     const usedS = new Set();
@@ -487,7 +507,51 @@
       used.add(c.b.id); usedS.add(c.s.id);
       swaps.push({ slot: c.s.slot, sit: c.s, start: c.b, gain: c.gain });
     }
-    return { fixes, swaps, questionable: starters.filter(s => availability(s, week) === 'q') };
+    return { fixes, swaps, questionable: starters.filter(s => availability(s, week) === 'q' && !s.locked) };
+  };
+
+  // ---- Game day: flex order and a plan for each questionable starter ------------------------------------------
+  // Worked out on one copy of the lineup with the tab's own fixes and swaps applied, so no two pieces of advice disagree:
+  // a tip never names a player being benched, and a backup is never a player already starting or promised to another row.
+  const PRACTICE = /did not practice|\bDNP\b|limited|full participant|practiced fully|sat out|practice/i;
+  const practiceLine = note => {
+    if (!note || !note.text) return '';
+    const hit = sentencesOf(note.text.replace(/Advice:\s*/, '. ')).find(x => PRACTICE.test(x));
+    return hit ? hit.trim().slice(0, 160) : '';
+  };
+  const gamePlan = (players, week, L, now) => {
+    const slotOf = new Map(players.map(p => [p.id, p.slot]));
+    L.fixes.forEach(f => { if (f.start) { slotOf.set(f.start.id, f.slot); if (f.sit) slotOf.set(f.sit.id, 'BN'); } });
+    L.swaps.forEach(w => { slotOf.set(w.start.id, w.slot); slotOf.set(w.sit.id, 'BN'); });
+    const starting = p => !/^(BN|IR)$/.test(slotOf.get(p.id));
+    const planned = p => !p.locked && !!p.kick;
+    // 1. an early game in the flex and a later game of the same position in its own slot: swap them, one tip at a time
+    const tips = [], inTip = new Set();
+    Object.keys(FLEX).forEach(fs => players.filter(F => slotOf.get(F.id) === fs).forEach(F => {
+      if (!planned(F) || inTip.has(F.id)) return;
+      const D = players.filter(d => d.pos === F.pos && slotOf.get(d.id) === F.pos && planned(d) && !inTip.has(d.id) && d.kick.key > F.kick.key)
+        .sort((a, b) => b.kick.key - a.kick.key)[0];
+      if (!D) return;
+      tips.push({ flex: fs, early: F, late: D }); inTip.add(F.id); inTip.add(D.id);
+      slotOf.set(F.id, F.pos); slotOf.set(D.id, fs);
+    }));
+    // 2. questionable starters, earliest kickoff first, each with a backup nobody else was promised
+    const reserved = new Set(), rows = [], order = p => (p.kick ? p.kick.key : 1e9);
+    players.filter(p => starting(p) && !p.locked && availability(p, week) === 'q').sort((a, b) => order(a) - order(b)).forEach(q => {
+      const slot = slotOf.get(q.id), sv = p => (isNaN(startValue(p)) ? -1 : startValue(p));
+      const backup = players.filter(b => slotOf.get(b.id) === 'BN' && !reserved.has(b.id) && !b.locked && canPlay(b, week) && slotFits(b, slot))
+        .sort((a, b) => ((a.injTag === 'Q' ? 1 : 0) - (b.injTag === 'Q' ? 1 : 0)) || (sv(b) - sv(a)))[0] || null;
+      if (backup) reserved.add(backup.id);
+      // the last moment you can act is when he or his backup kicks off; you learn whether he plays at the inactives
+      const decideBy = q.kick ? Math.min(q.kick.key, backup && backup.kick ? backup.kick.key : Infinity) : NaN;
+      const knowAt = q.kick ? q.kick.key - 90 : NaN;
+      rows.push({ q, slot, backup, decideBy, knowAt, blind: !!(backup && backup.kick && q.kick && backup.kick.key < knowAt),
+        passed: !isNaN(decideBy) && now > kickDate(decideBy, now), practice: practiceLine(q.note) });
+    });
+    const benched = players.filter(p => !/^(BN|IR)$/.test(p.slot) && !p.locked && availability(p, week) === 'q' && !starting(p));
+    const moves = new Map(players.filter(p => slotOf.get(p.id) !== p.slot).map(p => [p.id, slotOf.get(p.id)]));
+    const starters = players.filter(starting);
+    return { tips, rows, benched, moves, allLocked: starters.length > 0 && starters.every(p => p.locked) };
   };
 
   // ---- What you actually need: positions ranked from your own roster (empty slots, byes, injuries, depth, weak starters) ----
@@ -531,10 +595,12 @@
           proj: h.includes('Proj Pts') ? num(cx[h.indexOf('Proj Pts')]) : NaN,       // Yahoo's projection for the shown week: shown, never used to judge
           startPct: h.includes('% Start') ? pct(cx[h.indexOf('% Start')]).v : NaN,
           game: (/\b(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{1,2}:\d\d [ap]m (?:vs|@) [A-Za-z]+/.exec(tp) || [])[0] || '',
+          gameLine: txt(r.querySelector('.ysf-player-detail')),   // the game under his name: scheduled, live, final or a bye
           injTag: ([...r.querySelectorAll('span')].map(txt).find(s => INJ_TAG.test(s))) || '',
         });
       });
     });
+    out.forEach(p => { p.kick = parseKick(p.gameLine || p.game); p.locked = lockedLine(p.gameLine); });
     return out;
   };
   let rosterCache = null, teamHtmlMemo = null;
@@ -788,10 +854,10 @@
   const dropBanner = R => {
     const mine = new Set(R.players.map(p => p.id)), list = dropAlerts.filter(d => !mine.has(d.id));
     if (!list.length) return null;
-    const box = el('div', 'ff-verdict yes');
+    const box = el('div', 'ff-news');
     box.appendChild(el('div', 'hd', 'Just dropped in your league: ' + list.map(d => d.name).join(', ')));
     list.forEach(d => {
-      const row = el('div', 'sub'), btn = el('button', 'ff-btn', 'Look him up');
+      const row = el('div', 'item'), btn = el('button', 'ff-btn', 'Look him up');
       row.append(d.name + (d.tp ? ' (' + d.tp + ')' : '') + ': ' + d.ros + '% rostered across Yahoo, dropped by ' + d.who + ' ' + d.when + ', now on ' + d.status + '. ');
       btn.onclick = e => { e.stopPropagation(); goToPlayer(d); };
       row.appendChild(btn); box.appendChild(row);
@@ -1105,6 +1171,7 @@
   // UI
   // ===================================================================================================
   const CSS = `
+  #ff-tray{--ff-must:#c0392b;--ff-must-bg:#fde7e7;--ff-risk:#8a5a00;--ff-risk-bg:#fff4d6;--ff-option:#6001d2;--ff-option-bg:#faf6ff;--ff-ok:#2a9d3a;--ff-ok-bg:#effaf0;--ff-muted:#555}
   #ff-tray{position:fixed;top:0;right:0;height:100vh;width:var(--ffw,560px);max-width:94vw;z-index:2147483000;background:#fff;color:#111;border-left:3px solid #6001d2;box-shadow:-6px 0 24px rgba(0,0,0,.28);display:flex;flex-direction:column;transform:translateX(0);transition:transform .22s ease;font:13px/1.4 system-ui;text-align:left}
   #ff-tray.docked{box-shadow:none;border-left:2px solid #6001d2}
   #ff-tray.docked .ff-verdict .hd{font-size:15px}
@@ -1196,7 +1263,33 @@
   .ff-tabbtn{flex:1;font:700 12px system-ui;border:1px solid #6001d2;color:#6001d2;background:#fff;border-radius:8px;padding:6px 8px;cursor:pointer}
   .ff-tabbtn.on{background:#6001d2;color:#fff}
   .ff-irbox{border:1px dashed #6001d2;border-radius:8px;padding:6px 10px;background:#faf6ff;margin-top:6px}
-  .ff-btn{font:600 11px system-ui;border:1px solid #6001d2;color:#6001d2;background:#fff;border-radius:10px;padding:1px 8px;cursor:pointer;margin-left:6px}
+  .ff-btn{font:600 12px system-ui;border:1px solid var(--ff-option);color:var(--ff-option);background:#fff;border-radius:10px;padding:0 8px;min-height:28px;cursor:pointer;margin-left:6px}
+  #ff-tray button:focus-visible{outline:2px solid var(--ff-option);outline-offset:2px}
+  .ff-verdict .nl{font-weight:700;margin-top:4px;font-size:13px}
+  .ff-grp{margin:10px 0}
+  .ff-gh{font-size:11.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--ff-muted);margin:12px 0 4px}
+  .ff-row{padding:6px 0;border-top:1px solid #e6e6e6;font-size:12.5px}
+  .ff-lbl{display:inline-block;font-size:10.5px;font-weight:800;border-radius:6px;padding:0 6px;margin-right:6px}
+  .ff-lbl.risk{background:var(--ff-risk-bg);color:var(--ff-risk)}.ff-lbl.option{background:var(--ff-option-bg);color:var(--ff-option)}.ff-lbl.must{background:var(--ff-must-bg);color:var(--ff-must)}
+  .ff-row .l1{font-weight:700}
+  .ff-row .l2{font-weight:700;margin-top:2px;color:#111}
+  .ff-row .l3{color:var(--ff-muted);font-size:12px;margin-top:2px}
+  .ff-row.passed .l1,.ff-row.passed .l2{color:var(--ff-muted)}
+  .ff-more{font:600 12px system-ui;border:0;background:none;color:var(--ff-option);text-decoration:underline;cursor:pointer;padding:2px 0;min-height:24px}
+  .ff-row .ff-more{display:none}
+  #ff-tray:not(.wide) .ff-row .ff-more{display:inline-block}
+  #ff-tray:not(.wide) .ff-row .l3{display:none}
+  #ff-tray:not(.wide) .ff-row.open .l3{display:block}
+  #ff-tray.wide .nx{display:none}
+  .ff-pill{display:inline-block;font-size:10.5px;font-weight:700;background:#eee;color:#333;border-radius:8px;padding:0 6px;margin-left:6px}
+  .ff-tag{font-size:11px;font-weight:800;color:var(--ff-option);margin-left:6px}
+  .ff-judged .body{display:none}
+  .ff-judged.open .body{display:block}
+  .ff-opp{border:1px solid #cfe9d2;border-radius:8px;margin:0 0 10px;background:var(--ff-ok-bg);padding:2px 8px}
+  .ff-opp>.ff-more{font-weight:800;color:#0d4a14}
+  .ff-opp>.body{display:none}
+  .ff-opp.open>.body{display:block}
+  .ff-opp .ff-news{border:0;background:none;padding:4px 0;margin:0}
   `;
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const barsFor = (p, radar) => {
@@ -1327,6 +1420,7 @@
   // bring the verdict and comparison into view inside the tray
   const showResult = () => { const v = [...document.querySelectorAll('#ff-body .ff-verdict')].pop(); if (v) v.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
 
+  let lastView = '';
   const render = () => {
     document.querySelectorAll('.ff-board').forEach(e => e.remove());
     ensureBar();   // makes sure the tray exists
@@ -1334,13 +1428,15 @@
     const sumEl = document.getElementById('ff-sum'); if (sumEl) { sumEl.className = ''; sumEl.textContent = ''; }
     const b = el('div', 'ff-board');
     const R = board.roster;
-    if (newsAlerts.length) b.appendChild(newsBanner());
-    const drops = dropBanner(R); if (drops) b.appendChild(drops);
+    // news about other players (role news, just dropped) shares one collapsed strip under the tabs, so the lineup stays put
+    const opp = [], drops = dropBanner(R);
+    if (newsAlerts.length) opp.push(newsBanner());
+    if (drops) opp.push(drops);
     const tabs = el('div', 'ff-tabs');
     [['lineup', 'Lineup'], ['wire', 'Add / replace'], ['stash', 'Stash watch'], ['trends', 'Trends']].forEach(([v, label]) => {
       const t = el('button', 'ff-tabbtn' + (state.view === v ? ' on' : ''), label);
       t.onclick = () => {
-        state.view = v;
+        state.view = v; state.covering = null;
         if (v === 'trends') { openTrends(); return; }
         if (v === 'stash' && (!stashData || stashData.week !== board.week) && !stashData?.loading) { loadStashView(); return; }
         if (v === 'wire' && !state.radarPos && !radarLoading) { const top = needsOf(board.roster.players, board.week, SLOTS)[0]; if (top) { render(); selectRadarPos(top.pos); return; } }   // team page: open on your top need
@@ -1349,12 +1445,29 @@
       tabs.appendChild(t);
     });
     b.appendChild(tabs);
+    if (opp.length) {
+      const n = newsAlerts.length + dropAlerts.filter(d => !R.players.some(p => p.id === d.id)).length;
+      const strip = el('section', 'ff-opp' + (isOpen('opp') ? ' open' : ''));
+      strip.appendChild(expander('opp', 'Opportunities · ' + n, strip));
+      const body = el('div', 'body'); opp.forEach(x => body.appendChild(x)); strip.appendChild(body);
+      b.appendChild(strip);
+    }
+    if (state.view === 'wire' && state.covering) {      // came here from a questionable row with nobody left to cover him
+      const c = state.covering, line = el('div', 'ff-hint ff-covering'), back = el('button', 'ff-btn', '← Back to lineup');
+      back.onclick = e => { e.stopPropagation(); state.covering = null; state.view = 'lineup'; render(); };
+      line.append('Covering ' + c.name + ' (' + c.pos + ', ' + c.slot + ') ', back);
+      b.appendChild(line);
+    }
     if (state.view === 'lineup') {
       renderLineup(b, R, sumEl);
-      document.getElementById('ff-body').replaceChildren(b);
+      const body = document.getElementById('ff-body'), keep = lastView === 'lineup' ? body.scrollTop : 0;
+      body.replaceChildren(b);
+      if (keep) body.scrollTop = keep;      // a redraw (roster change, kickoff) keeps your place
+      lastView = state.view;
       window.__ffExpected = 1;
       return;
     }
+    lastView = state.view;
     if (state.view === 'trends') {
       renderTrends(b, R, sumEl);
       document.getElementById('ff-body').replaceChildren(b);
@@ -1532,8 +1645,27 @@
 
 
   const projText = p => p.bye === board.week ? '0 (bye)' : isNaN(p.proj) ? 'not shown' : f1(p.proj) + ' pts' + (p.game ? ', ' + p.game : '');
+  // view state that survives redraws: open expanders (a redraw must not close what you opened)
+  const isOpen = id => !!(state.open && state.open.has(id));
+  const toggleOpen = id => { state.open = state.open || new Set(); if (state.open.has(id)) state.open.delete(id); else state.open.add(id); };
+  const expander = (id, label, target) => {
+    const btn = el('button', 'ff-more', label); btn.setAttribute('aria-expanded', String(isOpen(id)));
+    btn.onclick = e => { e.stopPropagation(); toggleOpen(id); target.classList.toggle('open', isOpen(id)); btn.setAttribute('aria-expanded', String(isOpen(id))); };
+    return btn;
+  };
+  const clockText = now => new Date(now).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toLowerCase();
+  // a row inside a group: the kind is a word (Risk, Option, Must fix), not just a color
+  const ffRow = (label, kindCls) => { const r = el('div', 'ff-row'); r.appendChild(el('span', 'ff-lbl ' + kindCls, label)); return r; };
+  const ffGroup = (title, cls) => { const g = el('section', 'ff-grp ' + cls); g.appendChild(el('div', 'ff-gh', title)); return g; };
+  const lockText = p => (/^Final\b/.test(p.gameLine) ? 'Played' : /\b[WLT] \d+-\d+\b/.test(p.gameLine) ? 'Playing' : 'Locked: check Yahoo (' + p.gameLine + ')');
+  const findFor = (pos, label, covering) => {
+    const btn = el('button', 'ff-btn', label);
+    btn.onclick = e => { e.stopPropagation(); state.covering = covering || null; state.view = 'wire'; if (/^(QB|RB|WR|TE|K|DEF)$/.test(pos)) selectRadarPos(pos); else render(); };
+    return btn;
+  };
   const renderLineup = (b, R, sumEl) => {
     const week = board.week, L = computeLineup(R.players, week, SLOTS);
+    const now = (TEST && TEST.now) || Date.now(), G = gamePlan(R.players, week, L, now);
     const nm = p => p.name + ' (' + p.pos + ')';
     const stat = p => (!R.kd && /^(K|DEF)$/.test(p.pos) ? 'loading...' : isNaN(p.m.avg) ? 'no recent scoring' : p.m.good + '/' + (p.m.played || '?') + ' good games, avg ' + f1(p.m.avg) + ', ' + formText(p.m) + (usageText(p.m) ? '; ' + usageText(p.m) : ''));
     const guarded = criticalIssue();
@@ -1541,13 +1673,23 @@
     if (guarded) { kind = 'no'; headline = 'NO RECOMMENDATION: the data is not trustworthy'; sub = guarded.msg; }
     else if (L.fixes.length) { kind = 'no'; headline = 'FIX YOUR LINEUP: ' + L.fixes.map(f => f.sit ? f.sit.name + ' ' + f.why : 'your ' + f.slot + ' slot is empty').join('; '); sub = L.fixes.map(f => f.start ? 'Start ' + nm(f.start) + ' at ' + f.slot + '.' : 'Nobody on your bench can fill ' + f.slot + (f.sit ? '.' : ': add one from the wire.')).join(' '); }
     else if (L.swaps.length) { kind = 'yes'; headline = 'START ' + L.swaps.map(w => w.start.name).join(', ') + ' (week ' + week + ')'; sub = L.swaps.map(w => w.start.name + ' over ' + w.sit.name + ' at ' + w.slot).join('; ') + '.'; }
+    else if (G.tips.length) { kind = 'yes'; headline = 'Your week ' + week + ' lineup is right · ' + G.tips.length + ' optional reorder' + (G.tips.length > 1 ? 's' : ''); sub = 'Nobody in your lineup is out or on bye, and no bench player is clearly better than a starter.'; }
     else { kind = 'yes'; headline = 'Your week ' + week + ' lineup looks right'; sub = 'Nobody in your lineup is out or on bye, and no bench player is clearly better than a starter.'; }
-    if (sumEl) { sumEl.className = kind; sumEl.textContent = headline; }
+    // the one deadline that matters: the earliest questionable decision still open
+    const next = G.rows.filter(r => !r.passed && isFinite(r.decideBy)).sort((x, y) => x.decideBy - y.decideBy)[0];
+    const nextLine = guarded ? '' : next ? 'Next: decide ' + next.q.name + ' by ' + kickText(next.decideBy) : G.allLocked ? 'All your games have started' : 'Nothing to decide';
+    if (sumEl) { sumEl.className = kind; sumEl.textContent = headline + (nextLine ? ' · ' + nextLine : ''); }
     b.appendChild(el('h3', null, 'Week ' + week + ' start / sit'));
-    const box = el('div', 'ff-verdict ' + kind); box.append(el('div', 'hd', headline), el('div', null, sub)); b.appendChild(box);
-    b.appendChild(el('div', 'ff-hint', 'Judged on consistent scoring (last 4 weeks, weighted to the last 2), not Yahoo\'s one-week projections. Matchups and kickoff times are not considered. A bench player must beat a starter by 15% and 2 points, and a proven starter needs more. Kickers and defenses are the exception: they swing with the matchup, so they go by Yahoo\'s projection for this week (a ' + PROJ_EDGE + '-point edge to swap).'));
-    if (!guarded) {
+    const box = el('div', 'ff-verdict ' + kind); box.append(el('div', 'hd', headline), el('div', null, sub));
+    if (nextLine) box.appendChild(el('div', 'nl', nextLine + ' · as of ' + clockText(now)));
+    b.appendChild(box);
+    const named = new Set();   // players the advice names: they get a kickoff pill in the table at narrow widths
+    // ---- Do now: fixes and swaps --------------------------------------------------------------------------------
+    if (!guarded && (L.fixes.length || L.swaps.length)) {
+      const g = ffGroup('Do now', 'now');
+      g.appendChild(el('div', 'ff-hint', 'Recommended moves: make these in Yahoo.'));
       L.fixes.concat(L.swaps).forEach(x => {
+        [x.start, x.sit].forEach(p => p && named.add(p.id));
         const t = el('table', 'ff-cmp'), h = el('tr');
         [x.why ? 'MUST FIX: ' + x.slot : 'SWAP: ' + x.slot, x.start ? 'START: ' + nm(x.start) : 'No bench player can play ' + x.slot, x.sit ? 'SIT: ' + nm(x.sit) : 'EMPTY SLOT'].forEach(c => h.appendChild(el('th', null, c)));
         t.appendChild(h);
@@ -1555,17 +1697,49 @@
         row('Scoring', x.start ? stat(x.start) : '-', x.sit ? stat(x.sit) : 'nobody in the slot');
         row('Yahoo projection', x.start ? projText(x.start) : '-', x.sit ? projText(x.sit) : '0');
         row('Status', x.start ? healthText(x.start) + (x.start.bye === week ? '; on bye' : '') : '-', x.sit ? (x.why ? x.why : healthText(x.sit)) : 'empty: scores zero until filled');
-        b.appendChild(t);
-        if (!x.start) {
-          const fpos = x.sit ? x.sit.pos : x.slot, btn = el('button', 'ff-btn', 'Find a free-agent ' + fpos);
-          btn.onclick = e => { e.stopPropagation(); state.view = 'wire'; if (/^(QB|RB|WR|TE|K|DEF)$/.test(fpos)) selectRadarPos(fpos); else render(); };
-          b.appendChild(btn);
-        }
+        g.appendChild(t);
+        if (!x.start) g.appendChild(findFor(x.sit ? x.sit.pos : x.slot, 'Find a free-agent ' + (x.sit ? x.sit.pos : x.slot)));
       });
+      b.appendChild(g);
     }
+    // ---- Before kickoff: a plan for each questionable starter ------------------------------------------------
+    if (!guarded && (G.rows.length || G.benched.length)) {
+      const g = ffGroup('Before kickoff', 'soon');
+      G.rows.forEach(r => {
+        named.add(r.q.id); if (r.backup) named.add(r.backup.id);
+        const x = ffRow('Risk', 'risk'), id = 'q:' + r.q.id;
+        if (r.passed) x.classList.add('passed');
+        if (isOpen(id)) x.classList.add('open');
+        x.appendChild(el('span', 'l1', r.q.name + ' (' + r.q.pos + ', ' + r.slot + ') · Questionable'));
+        const l2 = r.passed ? 'Deadline passed: check Yahoo'
+          : !r.backup ? 'If out, nobody left on your bench can cover him'
+            : r.blind ? r.backup.name + ' plays first: decide before you know · by ' + kickText(r.decideBy)
+              : 'If out, start ' + r.backup.name + ' · decide by ' + kickText(r.decideBy);
+        x.appendChild(el('div', 'l2', l2));
+        const bits = [r.practice ? 'Practice: ' + r.practice + (r.q.note && r.q.note.date ? ' (note, ' + r.q.note.date + ')' : '') : 'No practice report in his latest note'];
+        if (!isNaN(r.knowAt)) bits.push("you'll know at " + kickText(r.knowAt) + ' (inactives)');
+        if (r.backup && r.backup.injTag === 'Q') bits.push('Backup ' + r.backup.name + ' is also questionable');
+        if (r.backup && r.backup.kick) bits.push(r.backup.name + ' kicks off ' + kickText(r.backup.kick.key));
+        x.appendChild(el('div', 'l3', bits.join(' · ')));
+        x.appendChild(expander(id, 'More', x));
+        if (!r.backup && !r.passed) x.appendChild(findFor(r.q.pos, 'Find a ' + r.q.pos + ' for ' + r.q.name, { name: r.q.name, pos: r.q.pos, slot: r.slot }));
+        g.appendChild(x);
+      });
+      G.benched.forEach(p => g.appendChild(el('div', 'ff-hint', p.name + ' is questionable; a move above benches him.')));
+      b.appendChild(g);
+    }
+    // ---- Optional: flex order, IR, open roster spot, season-done notes ---------------------------------------
+    const opt = ffGroup('Optional', 'opt');
+    if (!guarded) G.tips.forEach(t => {
+      named.add(t.early.id); named.add(t.late.id);
+      const x = ffRow('Option', 'option');
+      x.append('Flex order: put ' + t.early.name + ' (' + kickText(t.early.kick.key) + ') at ' + t.early.pos + ' and ' + t.late.name + ' (' + kickText(t.late.kick.key) + ') at ' + t.flex +
+        '. It costs nothing and keeps your flex open until ' + kickText(t.late.kick.key) + ', so a late scratch can be covered by any ' + FLEX[t.flex].join(', ') + '.');
+      opt.appendChild(x);
+    });
     const irP = irOption(R), needFA = L.fixes.find(f => !f.start);
     if (!guarded && irP && needFA) {                   // an injured player on the bench can go to the open IR slot, so the add costs nobody
-      const fpos = needFA.sit ? needFA.sit.pos : needFA.slot, irBox = el('div', 'ff-irbox');
+      const fpos = needFA.sit ? needFA.sit.pos : needFA.slot, irBox = ffRow('Option', 'option');
       irBox.append('Free option: ', el('b', null, 'move ' + irP.name + ' to your open IR slot'), ' (' + healthText(irP) + '), then add a free-agent ' + fpos + ' without dropping anyone. ');
       const irBtn = el('button', 'ff-btn', 'Compare a ' + fpos + ' using the IR slot');
       irBtn.onclick = e => {
@@ -1573,19 +1747,19 @@
         state.rep = { isFree: true, irPlayer: irP, id: 'IR-FREE', name: 'your open IR slot', pos: irP.pos, m: irP.m, out: 0, data: irP.data }; state.repManual = true; state.view = 'wire';
         if (/^(QB|RB|WR|TE|K|DEF)$/.test(fpos)) selectRadarPos(fpos); else render();
       };
-      irBox.appendChild(irBtn); b.appendChild(irBox);
+      irBox.appendChild(irBtn); opt.appendChild(irBox);
     }
     if (!guarded && R.benchFree) {
-      const fpos = needFA ? (needFA.sit ? needFA.sit.pos : needFA.slot) : '', open = el('div', 'ff-irbox');
+      const fpos = needFA ? (needFA.sit ? needFA.sit.pos : needFA.slot) : '', open = ffRow('Option', 'option');
       open.append('Open roster spot: ', el('b', null, 'you have ' + R.benchFree + ' empty bench slot' + (R.benchFree > 1 ? 's' : '')),
         ', so you can add ' + (fpos ? 'a free-agent ' + fpos + ' for this week' : 'the best available player') + ' without dropping anyone. ');
-      const ob = el('button', 'ff-btn', fpos ? 'Best available ' + fpos : 'See best available');
-      ob.onclick = e => { e.stopPropagation(); state.view = 'wire'; if (/^(QB|RB|WR|TE|K|DEF)$/.test(fpos)) selectRadarPos(fpos); else render(); };
-      open.appendChild(ob); b.appendChild(open);
+      open.appendChild(findFor(fpos, fpos ? 'Best available ' + fpos : 'See best available'));
+      opt.appendChild(open);
     }
-    if (!guarded) R.players.filter(p => seasonDone(p, week)).forEach(p => b.appendChild(el('div', 'ff-irbox', doneText(p, week))));
-    L.questionable.forEach(q => b.appendChild(el('div', 'ff-hint', nm(q) + ' is listed Questionable: check his status before kickoff.')));
+    if (!guarded) R.players.filter(p => seasonDone(p, week)).forEach(p => { const x = ffRow('Option', 'option'); x.append(doneText(p, week)); opt.appendChild(x); });
+    if (opt.children.length > 1) b.appendChild(opt);
     if (unknownSlots.length) b.appendChild(el('div', 'ff-hint', 'This league also has ' + unknownSlots.join(', ') + ' slots, which this tool does not read, so check those yourself.'));
+    // ---- Your lineup ------------------------------------------------------------------------------------------
     b.appendChild(el('h3', null, 'Your lineup'));
     // M and L widths add Yahoo's projection, the game and % started (CSS hides those columns at S and Side)
     const tbl = el('table', 'ff-cmp ff-lineup'), head = el('tr');
@@ -1601,10 +1775,13 @@
     [...R.players].sort((a, c) => (order[a.slot] ?? 9) - (order[c.slot] ?? 9)).forEach(p => {
       const a = availability(p, week), tr = el('tr');
       const below = !isNaN(p.proj) && !isNaN(p.m.avg) && p.m.avg >= 5 && p.proj < p.m.avg * 0.6;   // Yahoo sees a much smaller week than his recent scoring
-      const who = el('td', 'e', nm(p));
-      who.appendChild(el('div', 'gm xr', p.bye === week ? 'Bye' : (p.game || '')));   // the game sits under the name at M and L
+      const who = el('td', 'e', nm(p)), to = guarded ? null : G.moves.get(p.id);
+      if (to) who.appendChild(el('span', 'ff-tag', '→ ' + (to === 'BN' ? 'bench' : to)));                    // the move the advice above makes
+      if (named.has(p.id) && p.kick && !p.locked) who.appendChild(el('span', 'ff-pill nx', kickText(p.kick.key)));   // narrow widths: the time the advice depends on
+      who.appendChild(el('div', 'gm xr', p.bye === week ? 'Bye' : (p.game || p.gameLine || '')));   // the game sits under the name at M and L
+      const status = p.locked ? lockText(p) : a === 'ok' ? 'Healthy' : (a === 'q' ? 'Questionable' : AVAIL_TEXT[a]);
       tr.append(el('td', 'lab', p.slot), who, el('td', (below ? 'l' : 'e') + ' xc', isNaN(p.proj) ? '-' : f1(p.proj)), el('td', 'e', short(p)), el('td', 'e xxc', isNaN(p.startPct) ? '-' : p.startPct + '%'),
-        el('td', a === 'ok' ? 'e' : (a === 'q' ? 'e' : 'l'), a === 'ok' ? 'Healthy' : (a === 'q' ? 'Questionable' : AVAIL_TEXT[a])));
+        el('td', p.locked || a === 'ok' || a === 'q' ? 'e' : 'l', status));
       tbl.appendChild(tr);
     });
     const starters = R.players.filter(p => !/^(BN|IR)$/.test(p.slot));
@@ -1615,6 +1792,11 @@
     }
     b.appendChild(tbl);
     b.appendChild(el('div', 'ff-hint xr', 'Proj is Yahoo\'s projection for this week, shown for reference only; red means it is far below his recent scoring. The verdicts above do not use it.'));
+    // ---- How this is judged (collapsed) ------------------------------------------------------------------------
+    const judged = el('div', 'ff-judged' + (isOpen('judged') ? ' open' : ''));
+    const jb = expander('judged', 'How this is judged', judged); jb.classList.add('ff-judged-btn');
+    judged.appendChild(el('div', 'ff-hint body', 'Judged on consistent scoring (last 4 weeks, weighted to the last 2), not Yahoo\'s one-week projections. Matchups are not considered. A bench player must beat a starter by 15% and 2 points, and a proven starter needs more. Kickers and defenses are the exception: they swing with the matchup, so they go by Yahoo\'s projection for this week (a ' + PROJ_EDGE + '-point edge to swap). Players whose game has started are never moved. Times are as Yahoo shows them, in your time zone.'));
+    b.append(jb, judged);
   };
   const renderStash = (b, R, sumEl) => {
     b.appendChild(el('h3', null, 'Injured players on the wire worth holding?'));
@@ -1760,7 +1942,7 @@
     box.appendChild(el('div', 'hd', 'Role news: free in ' + league.name));
     newsAlerts.forEach(n => {
       const row = el('div', 'item');
-      row.append(nameLink(n.name, ''), el('span', null, ' (' + n.pos + ', ' + n.team + ') ' + (n.maybe ? 'may get' : 'is named for') + ' "' + n.phrase + '". '), el('span', 'nt', n.sentence));
+      row.append(nameLink(n.name, ''), el('span', null, ' (' + n.pos + ', ' + n.team + ') ' + (n.maybe ? 'may get' : 'is named for') + ' "' + n.phrase + '". '), el('span', 'nt', (n.date ? n.date + ': ' : '') + n.sentence));
       box.appendChild(row);
     });
     const ok = el('button', 'ff-btn', 'Got it');
@@ -2043,7 +2225,7 @@
   // Your roster changes without a page load (Yahoo saves lineup moves in place, or you add/drop in another tab).
   // Re-read it then, so the board never keeps judging the old roster.
   const onMyTeam = new RegExp('^/f1/' + leagueId + '/' + league.teamId + '(/|$)').test(PATH);
-  const rosterSig = doc => parseRoster(doc).map(p => p.slot + ':' + p.id + ':' + p.injTag).join(',');
+  const rosterSig = doc => parseRoster(doc).map(p => p.slot + ':' + p.id + ':' + p.injTag + ':' + p.gameLine).join(',');   // a kickoff counts as a change
   let lastSig = '', reloading = false, lastCheck = Date.now();
   const reloadRoster = async html => {
     if (reloading || running || !board) return;
@@ -2082,7 +2264,7 @@
     }, 800);
   };
   if (TEST) {
-    TEST.api = { readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
+    TEST.api = { parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
       GOOD, formText, summarizeTx, computeMovers, computeStreaks, checkRoster, pct, normName, nameKey, roleOf, roleNews, outLevel, proven, parseRoster, compare, coversBye, surplusStarter, seasonDone, irOption, suggestReplace, computeLineup, emptySlots, needsOf, startScore, setSlots: v => { SLOTS = v; }, getPending: () => pending, metrics, state, getYahooCount: () => yCount };
   }
   // The first visit to a league reads its settings; after that they come from storage and are re-read weekly.

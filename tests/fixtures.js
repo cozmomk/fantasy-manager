@@ -116,7 +116,7 @@ export function buzzPage(pos = 'WR') {
 
 export function teamPage() {
   const mine = players.filter(p => p.mine);
-  const mk = list => list.map((p, i) => `<tr><td>${p.slot}</td><td></td><td>${nameCell(p)}<span class="Fz-xxs">${p.bye === 6 ? 'Bye - No game this week' : `Sun 1:00 pm ${i % 2 ? '@' : 'vs'} Kc`}</span></td><td>${p.bye}</td>${p.bye === 6 ? '<td colspan="3">Bye</td><td>95%</td>' : `<td>10.00</td><td>${(8 + i * 1.25).toFixed(2)}</td><td>${60 - i}%</td>`}</tr>`).join('');
+  const mk = list => list.map((p, i) => `<tr><td>${p.slot}</td><td></td><td>${nameCell(p)}<span class="ysf-player-detail Nowrap Fz-xxs">${p.gameLine || (p.bye === 6 ? 'Bye - No game this week' : `Sun 1:00 pm ${i % 2 ? '@' : 'vs'} Kc`)}</span></td><td>${p.bye}</td>${p.bye === 6 ? '<td colspan="3">Bye</td><td>95%</td>' : `<td>10.00</td><td>${(8 + i * 1.25).toFixed(2)}</td><td>${60 - i}%</td>`}</tr>`).join('');
   const head = '<tr><th>Pos</th><th>Edit</th><th>Offense</th><th>Bye</th><th>Fan Pts</th><th>Proj Pts</th><th>% Start</th><th>% Ros</th></tr>';
   const t = (id, list) => `<table id="${id}">${head}<tr><th></th></tr>${mk(list)}</table>`;
   return `<!doctype html><html><body><div>Waiver Priority: 3rd</div>

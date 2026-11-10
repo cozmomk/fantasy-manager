@@ -66,3 +66,14 @@ mostly defensive. In order of payoff:
    and Wednesday waiver timing are where to get there first.
 8. **Read the other managers.** Who is desperate at a position, who has a bye crunch, who never checks waivers (the snapshots
    already record activity): for trade offers and claim timing.
+
+## A design system for the tray (DESIGN.md and a typeface)
+
+**Why:** every new feature re-decides type sizes, spacing and component shapes; the tray uses `system-ui` and literal
+values. Two outside design reviews (2026-11-10) flagged it.
+
+**What:** run `/design-consultation` to write a DESIGN.md for the tray: type scale, spacing, the named colors already
+added (`--ff-must`, `--ff-risk`, `--ff-option`, `--ff-ok`, `--ff-muted`), rules for groups, rows and pills, and a chosen
+typeface. Weigh the extra userscript size of a bundled font.
+
+**When:** before building the waiver claim plan (item 3 of `docs/designs/gameday-and-roadmap.md`). Nothing blocks it.
