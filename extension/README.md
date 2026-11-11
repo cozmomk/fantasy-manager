@@ -179,6 +179,20 @@ line per other league you belong to: its verdict, its next deadline and how old 
 your RB slot is empty · 2h ago"), linking to that team page. Nothing is fetched for the other league; a line older than
 a day turns red, and a league you have never opened is not shown.
 
+## Defense matchups and Yahoo vs record
+
+**Defense matchup.** For a defense, Yahoo's "Pts vs." column on the projected-week list is the points it is projected
+to allow this week (its tooltip says "Points Allowed"), which is what its opponent is projected to score. Wire rows and
+comparisons show it as "opponent projected to score 17.5 (easy matchup)": easy, average and tough are the lower,
+middle and upper thirds of this week's free defenses. In a comparison it only breaks a tie: when two defenses are
+projected within 1.5 points, an opponent projected to score at least 3 fewer points tips it, and the row says
+"tiebreak: easier opponent". Kickers have no such column, so their comparison says the matchup is not available. Your
+own defense's number costs one extra list page, loaded with your kicker and defense stats.
+
+**Yahoo vs record.** When a fix or swap on the Lineup tab involves a player Yahoo projects at least 40% above or below
+his recent average, the comparison table adds a "Yahoo vs record" row with both numbers ("Yahoo 18.0 vs his recent
+average 5.0 (+260%)"). The advice still follows recent scoring for offense; the row just shows that Yahoo disagrees.
+
 ## Sharing with a friend
 
 `npm run publish:friends` runs the checks and uploads the committed code to a secret GitHub gist. The first time, make the gist with `npm run check && node scripts/userscript.js --publish --create`, which saves its id in `scripts/gist-id.txt` and prints the install link. Friends install Tampermonkey, turn on **Allow User Scripts** for it in Chrome's extension details, open the link and click Install. Tampermonkey then picks up each publish on its own, usually within a day. Anyone with the link can read the script, so keep the link to people you trust.

@@ -623,6 +623,8 @@
       const over = { status: 'T', fteam: league.teamId, pos: g, myteam: '1' };
       mdata[g] = await analyze(list.map(p => p.id), week, { weekly: over, research: over }, 1, 1);
     }
+    const defProj = needKD && groups.DEF.length ? await fetchPage('S_PW_' + week, 0, { status: 'T', fteam: league.teamId, pos: 'DEF', myteam: '1' }) : {};
+    groups.DEF.forEach(p => { p.oppPts = defProj[p.id] ? num(defProj[p.id]['Pts vs.*']) : NaN; });
     for (const p of players) {
       const g = /^(QB|RB|WR|TE)$/.test(p.pos) ? 'O' : p.pos;
       p.data = mdata[g] || { weekNums: weekRange(week), weekly: Object.fromEntries(weekRange(week).map(w => [w, {}])), research: {} };
@@ -659,12 +661,22 @@
   const TAG_LABEL = { producer: 'Consistent', rising: 'Rising', buzz: 'Hype, no record', spike: 'One-week spike', watch: 'Watch', out: 'Out / injured', wkout: 'Out this week', usage: 'Usage up' };
   let radarCache = { sig: '', list: null };
   // o = his row from a Yahoo list (name, team, roster status, injury tag)
+  // A defense's matchup: Yahoo's "Pts vs." on the projected-week list is the points it is projected to allow this week,
+  // that is, what its opponent is projected to score. Thirds of this week's free defenses set easy / average / tough.
+  let oppCut = null;
+  const setOppCut = proj => {
+    const v = Object.values(proj).map(o => num(o['Pts vs.*'])).filter(x => !isNaN(x)).sort((a, b) => a - b);
+    if (v.length >= 6) oppCut = [v[Math.floor(v.length / 3)], v[Math.floor((2 * v.length) / 3)]];
+  };
+  const matchupWord = v => (!oppCut || isNaN(v) ? '' : v <= oppCut[0] ? 'easy' : v >= oppCut[1] ? 'tough' : 'average');
+  const matchupText = p => (isNaN(p.oppPts) ? 'no data' : 'opponent projected to score ' + f1(p.oppPts) + (matchupWord(p.oppPts) ? ' (' + matchupWord(p.oppPts) + ' matchup)' : ''));
   const wireCand = (id, o, pos, data, proj, SL) => {
     const team = o._team || '';
     const p = { id, name: o.name, pos, team, status: o['Roster Status'] || '', injTag: o._inj, data, mine: false };
     p.m = metrics(id, pos, data, true);
     p.bye = p.m.bye;
     p.proj = proj[id] ? num(proj[id]['Fan Pts']) : NaN;
+    p.oppPts = pos === 'DEF' && proj[id] ? num(proj[id]['Pts vs.*']) : NaN;
     p.sl = slInfo(SL, o.name, pos, team);
     p.m.sl = p.sl;
     return p;
@@ -698,6 +710,7 @@
     [...top(season), ...top(l4)].forEach(([id, o]) => { cand[id] = o; });
     // kickers and defenses swing with the matchup, so this week's projection says more than their recent scoring
     const byProj = PROJ_POS.test(pos), proj = byProj ? await fetchPage('S_PW_' + week, 0, { status: 'A', pos, sort: 'PTS', myteam: '0' }) : {};
+    if (pos === 'DEF') setOppCut(proj);
     Object.entries(proj).sort((a, b) => (num(b[1]['Fan Pts']) || 0) - (num(a[1]['Fan Pts']) || 0)).slice(0, 8).forEach(([id, o]) => { if (!cand[id]) cand[id] = o; });
     const unmatched = [];
     if (SL) {
@@ -720,7 +733,8 @@
       list.forEach(refreshOut);
       // injured last; then the most good games (your priority: consistent scorers), then tag, then average
       const pj = p => (isNaN(p.proj) ? -1 : p.proj);
-      list.sort((a, b) => (a.out - b.out) || (byProj ? pj(b) - pj(a) : 0) || (b.m.good - a.m.good) || ((pri[a.tag] || 0) - (pri[b.tag] || 0)) || byRecord(b, a));
+      const opp = p => (isNaN(p.oppPts) ? 99 : p.oppPts);   // equal projections: the easier opponent first
+      list.sort((a, b) => (a.out - b.out) || (byProj ? pj(b) - pj(a) : 0) || (pos === 'DEF' ? opp(a) - opp(b) : 0) || (b.m.good - a.m.good) || ((pri[a.tag] || 0) - (pri[b.tag] || 0)) || byRecord(b, a));
     };
     rankList();
     // notes cost a request each, so read them only where they matter: every flagged player, plus the best few others
@@ -1098,7 +1112,12 @@
     if (PROJ_POS.test(c.pos) && c.pos === r.pos && !isNaN(wkProj(c)) && !isNaN(wkProj(r))) {
       const d = wkProj(c) - wkProj(r), pl = p => [f1(wkProj(p)) + ' pts' + (p.bye === ctxInfo.week ? ' (bye)' : '')];
       add('This week\'s projection', 3, d >= 1.5 ? 1 : (d <= -1.5 ? -1 : 0), pl(c), pl(r));
+      if (c.pos === 'DEF') {   // the matchup only breaks a tie: a projection within 1.5 points
+        const tie = Math.abs(d) < 1.5, m = r.oppPts - c.oppPts, edge = tie && !isNaN(m) && Math.abs(m) >= 3 ? Math.sign(m) : 0;
+        add('Matchup this week' + (edge ? ' (tiebreak: easier opponent)' : ''), 1, edge, [matchupText(c)], [matchupText(r)]);
+      }
     }
+    if (c.pos === 'K' && r.pos === 'K') add('Matchup this week', 0, 0, ['matchup not available for kickers'], ['matchup not available for kickers']);
     // 4. role
     const dc = depthRank(c), dr = depthRank(r);
     const samePos = c.pos === r.pos;   // "RB2 vs WR1" says nothing, so only compare roles at the same position
@@ -1641,7 +1660,7 @@
         left.append(nm, el('div', 'sub', c.team + ' ' + c.pos + ' | ' + (/^W \(/.test(c.status) ? 'waivers ' + c.status.slice(3, -1) : (c.status === 'FA' ? 'FREE AGENT' : c.status)) + (c.injTag ? ' | ' + c.injTag : '')));
         const why = c.out === 2 ? 'Out long-term: ' + (c.note ? c.note.text.slice(0, 90) : healthText(c))
           : c.out === 1 ? 'Out this week: ' + (c.note ? c.note.text.slice(0, 90) : '')
-            : (isNaN(c.proj) ? '' : 'Projected ' + f1(c.proj) + ' this week. ') + c.m.good + ' of ' + c.m.played + ' good games, avg ' + f1(c.m.avg) + '. ' + (usageText(c.m) ? 'Usage ' + usageText(c.m).slice(6) + '. ' : '') + (c.m.trendKnown ? 'Rostered ' + signed(c.m.ros.d) + ' this week. ' : '') + (c.sl && c.sl.add ? 'Sleeper #' + c.sl.add.posRank + ' at pos for adds.' : 'Not trending on Sleeper.');
+            : (isNaN(c.proj) ? '' : 'Projected ' + f1(c.proj) + ' this week' + (c.pos === 'DEF' ? ', ' + matchupText(c) : '') + '. ') + c.m.good + ' of ' + c.m.played + ' good games, avg ' + f1(c.m.avg) + '. ' + (usageText(c.m) ? 'Usage ' + usageText(c.m).slice(6) + '. ' : '') + (c.m.trendKnown ? 'Rostered ' + signed(c.m.ros.d) + ' this week. ' : '') + (c.sl && c.sl.add ? 'Sleeper #' + c.sl.add.posRank + ' at pos for adds.' : 'Not trending on Sleeper.');
         row.append(left, el('div'), el('div', 'why', why));
         row.appendChild(el('button', 'ff-btn', 'Compare'));
         row.onclick = e => { e.stopPropagation(); state.cand = c; render(); showResult(); };   // compare right here; the name link runs Yahoo's search
@@ -1786,6 +1805,11 @@
         const row = (label, a, c) => { const tr = el('tr'); tr.append(el('td', 'lab', label), el('td', 'e', a), el('td', 'e', c)); t.appendChild(tr); };
         row('Scoring', x.start ? stat(x.start) : '-', x.sit ? stat(x.sit) : 'nobody in the slot');
         row('Yahoo projection', x.start ? projText(x.start) : '-', x.sit ? projText(x.sit) : '0');
+        const gap = p => (p && !PROJ_POS.test(p.pos) && !isNaN(p.proj) && p.m.avg >= 2 && p.bye !== week ? (p.proj - p.m.avg) / p.m.avg : NaN);
+        if ([x.start, x.sit].some(p => Math.abs(gap(p)) >= 0.4)) {   // Yahoo sees his week very differently from his record
+          const vr = p => (!p ? '-' : isNaN(gap(p)) ? 'n/a' : 'Yahoo ' + f1(p.proj) + ' vs his recent average ' + f1(p.m.avg) + ' (' + (gap(p) > 0 ? '+' : '') + Math.round(gap(p) * 100) + '%)' + (Math.abs(gap(p)) < 0.4 ? ': in line' : ''));
+          row('Yahoo vs record (advice follows recent scoring)', vr(x.start), vr(x.sit));
+        }
         row('Status', x.start ? healthText(x.start) + (x.start.bye === week ? '; on bye' : '') : '-', x.sit ? (x.why ? x.why : healthText(x.sit)) : 'empty: scores zero until filled');
         g.appendChild(t);
         if (!x.start) g.appendChild(findFor(x.sit ? x.sit.pos : x.slot, 'Find a free-agent ' + (x.sit ? x.sit.pos : x.slot)));
@@ -2396,7 +2420,7 @@
     }, 800);
   };
   if (TEST) {
-    TEST.api = { lineupVerdict, claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
+    TEST.api = { matchupText, setOppCut, lineupVerdict, claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
       GOOD, formText, summarizeTx, computeMovers, computeStreaks, checkRoster, pct, normName, nameKey, roleOf, roleNews, outLevel, proven, parseRoster, compare, coversBye, surplusStarter, seasonDone, irOption, suggestReplace, computeLineup, emptySlots, needsOf, startScore, setSlots: v => { SLOTS = v; }, getPending: () => pending, metrics, state, getYahooCount: () => yCount };
   }
   // The first visit to a league reads its settings; after that they come from storage and are re-read weekly.

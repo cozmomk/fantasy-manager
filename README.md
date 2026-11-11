@@ -18,6 +18,15 @@ own login, and you make every move yourself.
 - **Alerts.** Role changes in player notes, widely rostered players just dropped in your league, and stash candidates,
   in one "Opportunities" line. If you are in more than one league, the tray header shows the other league's verdict.
 
+### Screenshots
+
+These are drawn from the offline test data, not a real league (`npm run screenshots` regenerates them).
+
+| Lineup tab | Add / replace tab | Stash watch tab |
+| --- | --- | --- |
+| [![Lineup tab: the verdict with the next deadline, a questionable starter's backup plan, a flex-order tip and the lineup table](media/lineup.png)](media/lineup.png) | [![Add / replace tab: roster cards, the best available running backs, a claim plan with alternates and the comparison verdict](media/add-replace.png)](media/add-replace.png) | [![Stash watch tab: injured free agents ranked by return timing, with a stash verdict and its checks](media/stash.png)](media/stash.png) |
+| The verdict and next deadline, a plan for a questionable starter, a flex-order tip, and your lineup with locked players and recommended moves tagged. | Your roster, the best free agents at a position, a claim plan with alternates, and a side-by-side verdict. | Injured free agents worth holding, checked against your playoff weeks. |
+
 Players are judged on consistent scoring (the last 4 weeks, weighted to the last 2) and usage, not one-week
 projections; kickers and defenses go by Yahoo's projection because they swing with the matchup. The full rules are in
 [extension/README.md](extension/README.md).
@@ -136,6 +145,7 @@ The tests drive your installed Google Chrome through Playwright with every Yahoo
 | `extension/content.js` | The whole tool: data loading, rules, and the tray UI. |
 | `extension/README.md` | Every feature and the rule behind each verdict. |
 | `scripts/userscript.js` | Builds and serves the userscript (adds the Tampermonkey header). |
+| `scripts/screenshots.js` | Renders the README screenshots in `media/` from the test data. |
 | `tests/` | Offline tests; `fixtures.js` is the mock Yahoo built from real page structure. |
 | `CLAUDE.md` | Rules for anyone (or any AI assistant) changing the code. Read it first. |
 | `TODO.md` | Ideas and planned work. |

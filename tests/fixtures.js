@@ -23,8 +23,8 @@ export const players = [
   P(10, 'Jonathon Brooks', 'Car', 'RB', { bye: 5, weeks: [6, 1, 0, 0], adp: 180, depth: 'RB3', mine: true, slot: 'IR', inj: 'IR' }),
   P(11, 'Evan McPherson', 'Cin', 'K', { bye: 6, weeks: [18, 12, 11, 4], adp: 150, depth: 'K1', mine: true, slot: 'K', ros: [100, 0] }),
   P(12, 'Ravens', 'Bal', 'DEF', { bye: 13, weeks: [7, 3, 5, 7], adp: 100, mine: true, slot: 'DEF', ros: [100, 0] }),
-  P(62, 'Seahawks', 'Sea', 'DEF', { bye: 11, weeks: [12, 9, 4, 10], ros: [40, 5], status: 'FA' }),
-  P(63, 'Texans', 'Hou', 'DEF', { bye: 6, weeks: [3, 2, 1, 4], ros: [20, 0], status: 'FA' }),
+  P(62, 'Seahawks', 'Sea', 'DEF', { bye: 11, weeks: [12, 9, 4, 10], ros: [40, 5], status: 'FA', oppPts: 17.5 }),
+  P(63, 'Texans', 'Hou', 'DEF', { bye: 6, weeks: [3, 2, 1, 4], ros: [20, 0], status: 'FA', oppPts: 25 }),
   // ---- the wire ----
   P(20, 'Kirk Cousins', 'LV', 'QB', { bye: 13, weeks: [13, 17, 18, 21], ros: [37, 15], start: [22, 13], status: 'W', depth: 'QB1', preRank: 120 }),
   P(21, 'C.J. Stroud', 'Hou', 'QB', { bye: 8, weeks: [18, 17, 19, 20], ros: [63, 3], start: [40, 2], status: 'W', depth: 'QB1', preRank: 60 }),
@@ -87,14 +87,15 @@ export function listPage({ pos = 'O', status = 'A', stat = 'S_PW_5', fteam, sort
   const weekly = /^S_W_\d+$/.test(stat);
   const head = research
     ? ['', '', 'Offense', 'Highlight', 'Roster Status', 'Opp Rank', '% Ros', '% Start', 'Avg Pick', 'Depth Chart']
-    : ['', '', 'Offense', 'Highlight', 'Roster Status', 'GP*', 'Bye', 'Fan Pts', 'Pre-Season', 'Actual', '% Ros', 'Att*', 'Tgt*'];
+    : ['', '', 'Offense', 'Highlight', 'Roster Status', 'GP*', 'Bye', 'Fan Pts', 'Pre-Season', 'Actual', '% Ros', 'Att*', 'Tgt*', 'Pts vs.*'];
   const pctCell = ([v, d]) => `${v}% (${d > 0 ? '+' : d < 0 ? '-' : ''}${d ? Math.abs(d) : '–'})`;
   const body = rows.map(p => {
     const v = statValue(p, stat);
     const cells = research
       ? ['', '', nameCell(p), '', statusHtml(p), '10th for WRs', pctCell(p.ros), pctCell(p.start), isNaN(p.adp) ? '-' : p.adp, p.depth]
       // a weekly view shows a game he missed (injured, inactive) as GP "-" with 0.00 points, as Yahoo does
-      : ['', '', nameCell(p), '', statusHtml(p), weekly ? (v === null ? '-' : 1) : games(p), p.bye, v === null ? (weekly ? '0.00' : '-') : f2(v), p.preRank, 100, `${p.ros[0]}%`, ...usageOf(p, stat)];
+      : ['', '', nameCell(p), '', statusHtml(p), weekly ? (v === null ? '-' : 1) : games(p), p.bye, v === null ? (weekly ? '0.00' : '-') : f2(v), p.preRank, 100, `${p.ros[0]}%`, ...usageOf(p, stat),
+        p.pos === 'DEF' && /^S_PW_/.test(stat) ? (p.oppPts ?? 21).toFixed(1) : '-'];   // a defense's points allowed (projected for the week)
     return `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`;
   }).join('');
   return `<!doctype html><html><head><title>Player List | Fantasy Football | Yahoo! Sports</title></head><body>

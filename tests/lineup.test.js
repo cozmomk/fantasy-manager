@@ -601,6 +601,42 @@ describe('stash alert and other leagues', () => {
   });
 });
 
+describe('defense matchups and Yahoo vs record', () => {
+  it('a defense shows what its opponent is projected to score, and the matchup word comes from this week\'s free defenses', async () => {
+    const { page, context } = await openBoard(browser, { pos: 'DEF' });
+    await waitForBoard(page);
+    const row = await page.locator('.ff-cand', { hasText: 'Seahawks' }).innerText();
+    assert.match(row, /opponent projected to score 17\.5/);
+    const words = await page.evaluate(() => {
+      const a = window.__FF_TEST__.api, proj = {}; [14, 16, 18, 20, 22, 24, 26, 28, 30].forEach((v, i) => { proj['t' + i] = { 'Pts vs.*': String(v) }; });
+      a.setOppCut(proj);
+      return [15, 22, 29, NaN].map(v => a.matchupText({ oppPts: v }));
+    });
+    assert.deepEqual(words, ['opponent projected to score 15.0 (easy matchup)', 'opponent projected to score 22.0 (average matchup)', 'opponent projected to score 29.0 (tough matchup)', 'no data']);
+    // the comparison carries a matchup row next to the projection
+    await page.locator('.ff-cand', { hasText: 'Seahawks' }).click();
+    await page.locator('table.ff-cmp', { hasText: 'Matchup this week' }).first().waitFor({ timeout: 20000 });
+    assert.match(await page.locator('table.ff-cmp', { hasText: 'Matchup this week' }).first().innerText(), /opponent projected to score 17\.5/);
+    await context.close();
+  });
+  it('kickers say the matchup is not available', async () => {
+    const { page, context } = await openBoard(browser, { pos: 'K' });
+    await waitForBoard(page);
+    await page.locator('.ff-cand').first().click();
+    await page.locator('table.ff-cmp', { hasText: 'Matchup this week' }).first().waitFor({ timeout: 20000 });
+    assert.match(await page.locator('table.ff-cmp', { hasText: 'Matchup this week' }).first().innerText(), /matchup not available for kickers/);
+    await context.close();
+  });
+  it('a fix or swap shows Yahoo vs record when Yahoo sees his week very differently', async () => {
+    const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID) });
+    await waitForBoard(page, { radar: false });
+    const t = await page.locator('.ff-grp.now table.ff-cmp', { hasText: 'Terry McLaurin' }).innerText();
+    assert.match(t, /Yahoo vs record \(advice follows recent scoring\)/);
+    assert.match(t, /Yahoo 18\.0 vs his recent average 5\.0 \(\+260%\)/);
+    await context.close();
+  });
+});
+
 describe('the add page', () => {
   const addUrl = pid => `https://football.fantasysports.yahoo.com/f1/${LEAGUE_ID}/addplayer?apid=${pid}`;
   it('opens on the comparison for the player being added', async () => {

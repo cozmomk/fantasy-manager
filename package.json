@@ -10,7 +10,8 @@
     "userscript": "node scripts/userscript.js",
     "serve": "node scripts/userscript.js --serve",
     "publish:friends": "npm run check && node scripts/userscript.js --publish",
-    "release": "npm run check && node scripts/userscript.js --release"
+    "release": "npm run check && node scripts/userscript.js --release",
+    "screenshots": "node scripts/screenshots.js"
   },
   "dependencies": {
     "playwright-core": "^1.49.0"
