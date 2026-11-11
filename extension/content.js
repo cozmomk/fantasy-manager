@@ -1424,11 +1424,11 @@
       return { kind: 'drop', drop: d };
     };
     const pick = ok => { const out = avail.filter(c => !usedC.has(c.id) && ok(c)).slice(0, 3); out.forEach(c => usedC.add(c.id)); return out; };
-    // 1. lineup holes: any healthy free player beats an empty slot
+    // 1. lineup holes: any healthy free player who plays this week beats an empty slot (one on bye fills nothing)
     L.fixes.filter(f => !f.start && fits(f.slot)).forEach(f => {
       if (groups.length >= 3) return;
       const r = room(); if (!r) return;
-      const picks = pick(() => true);
+      const picks = pick(c => c.bye !== week);
       if (picks.length) groups.push({ slot: f.slot, why: f.sit ? f.sit.name + ' is ' + f.why + ' and nobody on your bench can play ' + f.slot : 'your ' + f.slot + ' slot is empty', room: r, picks });
     });
     // 2. upgrades: a free player who clearly beats the player you would drop (an open spot needs no comparison)

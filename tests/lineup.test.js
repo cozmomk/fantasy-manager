@@ -509,6 +509,18 @@ describe('claim plan and IR watch', () => {
     assert.doesNotMatch(t, /Caleb Williams/, 'never plans a claim on a player who is out');
     await context.close();
   });
+  it('a hole this week is never filled with a player on bye this week', async () => {
+    const cousins = players.find(p => p.id === '20'), saved = cousins.bye;
+    cousins.bye = 6;
+    try {
+      const { page, context } = await openBoard(browser, { pos: 'QB', mutate: week6p });
+      await waitForBoard(page);
+      const t = await plan(page).innerText();
+      assert.doesNotMatch(t, /Kirk Cousins/);
+      assert.match(t, /Fill QB · drop \S[^\n]*\n[^\n]*C\.J\. Stroud/);
+      await context.close();
+    } finally { cousins.bye = saved; }
+  });
   it('the room an IR move makes is used before anyone is dropped', async () => {
     const restore = freeIR();
     try {
