@@ -162,6 +162,19 @@ bench spot") even when no lineup hole needs filling. Yahoo's settings page does 
 IR, so the tool uses Yahoo's standard rule (Out, IR or NA, or a long-term injury). A Doubtful player is not eligible
 yet: with an IR slot open, his status says so.
 
+## Stash alerts and your other league
+
+**Stash alert.** When the Stash watch check finds an injured free agent worth holding (a STASH verdict: productive
+before the injury and back well before your playoffs) who is at least 70% rostered across Yahoo, he appears in the
+"Opportunities" strip with his return estimate and waiver status. The check runs when you open the Stash watch tab,
+and the daily snapshot repeats it once a day (4 list pages and up to 6 notes, paced like every other request). "Got it"
+hides a player for good in that league.
+
+**Your other league.** Each league's tray saves its Lineup verdict as it draws. The header of the tray then shows one
+line per other league you belong to: its verdict, its next deadline and how old that is ("Sunday League: FIX YOUR LINEUP:
+your RB slot is empty · 2h ago"), linking to that team page. Nothing is fetched for the other league; a line older than
+a day turns red, and a league you have never opened is not shown.
+
 ## Sharing with a friend
 
 `npm run publish:friends` runs the checks and uploads the committed code to a secret GitHub gist. The first time, make the gist with `npm run check && node scripts/userscript.js --publish --create`, which saves its id in `scripts/gist-id.txt` and prints the install link. Friends install Tampermonkey, turn on **Allow User Scripts** for it in Chrome's extension details, open the link and click Install. Tampermonkey then picks up each publish on its own, usually within a day. Anyone with the link can read the script, so keep the link to people you trust.

@@ -547,6 +547,60 @@ describe('claim plan and IR watch', () => {
   });
 });
 
+describe('stash alert and other leagues', () => {
+  it('a widely rostered injured free agent worth stashing shows in the Opportunities strip until dismissed', async () => {
+    const caleb = players.find(p => p.id === '70'), saved = caleb.ros;
+    caleb.ros = [90, 0];
+    try {
+      const { page, context } = await openBoard(browser, { pos: 'WR' });
+      await waitForBoard(page);
+      await page.locator('.ff-tabbtn', { hasText: 'Stash' }).click();
+      await page.locator('.ff-opp > .ff-more').waitFor({ timeout: 30000 });
+      assert.match(await page.locator('.ff-opp > .ff-more').innerText(), /Opportunities · 1/);
+      await page.locator('.ff-opp > .ff-more').click();
+      const t = await page.locator('.ff-opp').innerText();
+      assert.match(t, /Worth stashing: Caleb Williams/);
+      assert.match(t, /90% rostered across Yahoo/);
+      assert.match(t, /From the Stash watch check on/);
+      await page.locator('.ff-opp').getByText('Got it').click();
+      assert.equal(await page.locator('.ff-opp').count(), 0);
+      await context.close();
+    } finally { caleb.ros = saved; }
+  });
+  it('a player under 70% rostered is not announced', async () => {
+    const { page, context } = await openBoard(browser, { pos: 'WR' });
+    await waitForBoard(page);
+    await page.locator('.ff-tabbtn', { hasText: 'Stash' }).click();
+    await page.getByText(/Caleb Williams/).first().waitFor({ timeout: 30000 });
+    await page.waitForTimeout(500);
+    assert.equal(await page.locator('.ff-opp').count(), 0);
+    await context.close();
+  });
+  it('the tray header shows your other league\'s last saved verdict, with its age, and saves this one', async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await context.addInitScript(() => {
+      try {
+        const h = 3600000;
+        localStorage.setItem('ff:team:222222', '4');
+        localStorage.setItem('ff:leagueSum:222222', JSON.stringify({ t: Date.now() - 2 * h, name: 'Other League', team: '4', headline: 'FIX YOUR LINEUP: your RB slot is empty', next: 'Next: decide Pickens by Sun 1:05 pm' }));
+        localStorage.setItem('ff:team:333333', '9');
+        localStorage.setItem('ff:leagueSum:333333', JSON.stringify({ t: Date.now() - 30 * h, name: 'Old League', team: '9', headline: 'Your week 9 lineup looks right', next: '' }));
+      } catch (e) { /* ignore */ }
+    });
+    const { page } = await openBoard(browser, { url: teamUrl(TEAM_ID), context });
+    await waitForBoard(page, { radar: false });
+    await page.locator('#ff-other .ff-oth').first().waitFor({ timeout: 15000 });
+    const other = page.locator('#ff-other .ff-oth', { hasText: 'Other League' });
+    assert.match(await other.innerText(), /^Other League: FIX YOUR LINEUP: your RB slot is empty · Next: decide Pickens by Sun 1:05 pm · 2h ago$/);
+    assert.match(await other.getAttribute('href'), /\/f1\/222222\/4$/);
+    assert.match(await page.locator('#ff-other .ff-oth.old').innerText(), /^Old League: .* · 1d ago$/);
+    const mine = await page.evaluate(id => JSON.parse(localStorage.getItem('ff:leagueSum:' + id)), LEAGUE_ID);
+    assert.equal(mine.team, TEAM_ID);
+    assert.match(mine.headline, /lineup|FIX YOUR LINEUP/);
+    await context.close();
+  });
+});
+
 describe('the add page', () => {
   const addUrl = pid => `https://football.fantasysports.yahoo.com/f1/${LEAGUE_ID}/addplayer?apid=${pid}`;
   it('opens on the comparison for the player being added', async () => {

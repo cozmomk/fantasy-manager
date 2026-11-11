@@ -159,7 +159,8 @@ describe('daily snapshots and trends', () => {
     assert.equal(snap.tx.length, 5, 'transactions parsed from the feed');
     assert.ok(snap.sleeper.add24.length > 0 && Object.keys(snap.sleeper.names).length > 0);
     assert.ok(JSON.stringify(snap).length < 40000, 'a snapshot stays small');
-    assert.ok(snap.yahooRequests <= 6 + snap.dropChecks, `${snap.yahooRequests} Yahoo requests for the snapshot`);
+    assert.ok(snap.yahooRequests <= 6 + snap.dropChecks + snap.stashRequests, `${snap.yahooRequests} Yahoo requests for the snapshot`);
+    assert.ok(snap.stashRequests <= 10, `${snap.stashRequests} requests for the daily stash check (4 lists + up to 6 notes)`);
     assert.equal(snap.dropChecks, 2, 'only recent drops are checked');
     const n = calls(stats).length;
     await page.reload(); await page.addScriptTag({ content: CONTENT_JS });

@@ -934,6 +934,10 @@
         const d = await fetchPage('S_S_2026', 0, { status: 'A', pos, sort: 'AR', myteam: '0' });   // usually already cached by the radar
         doc.wire[pos] = Object.entries(d).sort((a, b) => a[1]._i - b[1]._i).slice(0, 25).map(([id, o]) => ({ id, name: o.name, team: o._team || '', ros: pct(o['% Ros']).v, pts: num(o['Fan Pts']), status: (o['Roster Status'] || '').slice(0, 16) }));
       }
+      const savedStash = await kvGet(stashAlertKey);
+      const stashBefore = yCount;
+      if (!savedStash || savedStash.week !== week || Date.now() - savedStash.t > STASH_HOURS * 3600000) { await saveStashAlerts(await loadStash(week, SL)); await refreshStashAlerts(); }
+      doc.stashRequests = yCount - stashBefore;   // the once-a-day stash check: 4 list pages and up to 6 notes
       const tres = await yfetch('/f1/' + leagueId + '/transactions', { credentials: 'include' });
       if (tres.ok) doc.tx = parseTransactions(new DOMParser().parseFromString(await tres.text(), 'text/html'));
       if (!doc.tx.length) flag('tx', 'The transactions page showed no readable rows, so trends will be incomplete.', false);
@@ -1008,6 +1012,16 @@
     c.fit = stashFit(c.ret); c.tier = stashTier(c);
   };
   let stashData = null;
+  // ---- Stash alert: an injured, widely rostered free player worth holding --------------------------------------
+  // Saved from the last Stash watch check (the tab, or the daily snapshot), so showing it costs no request.
+  const STASH_ROS = 70, STASH_HOURS = 24, stashAlertKey = 'stashAlert:' + leagueId, stashSeenKey = 'stashSeen:' + leagueId;
+  let stashAlerts = [];
+  const saveStashAlerts = d => kvSet(stashAlertKey, { t: Date.now(), week: d.week,
+    list: d.list.filter(c => c.tier === 0 && c.ros >= STASH_ROS).map(c => ({ id: c.id, name: c.name, pos: c.pos, team: c.team, status: c.status, ros: c.ros, fit: c.fit.t })) });
+  const refreshStashAlerts = async () => {
+    const h = await kvGet(stashAlertKey), seen = (await kvGet(stashSeenKey)) || [];
+    stashAlerts = h && h.week === curWeek && Array.isArray(h.list) ? h.list.filter(c => !seen.includes(c.id)).map(c => Object.assign({}, c, { at: h.t })) : [];
+  };
   // Light on Yahoo: 4 list pages (one per position) + one note per candidate. Weekly scans are skipped, so
   // production comes from season totals and games played (points per game before the injury).
   const loadStash = async (week, SL) => {
@@ -1018,7 +1032,7 @@
         const p = { id, name: o.name, pos, team: o._team || '', status: o['Roster Status'] || '', injTag: o._inj, mine: false, data: { weekNums: [] } };
         p.m = { thr: GOOD[pos] || 8, weeks: [], good: 0, played: 0, avg: NaN, adp: NaN, trendKnown: false, ros: { v: NaN, d: 0 }, start: { v: NaN, d: 0 } };
         p.seasonPts = num(o['Fan Pts']); p.gp = num(o['GP*']); p.perGame = p.gp > 0 ? p.seasonPts / p.gp : NaN;
-        p.preRank = num(o['Pre-Season']);
+        p.preRank = num(o['Pre-Season']); p.ros = pct(o['% Ros']).v;
         p.sl = slInfo(SL, o.name, pos, p.team); p.m.sl = p.sl;
         list.push(p);
       });
@@ -1291,6 +1305,9 @@
   .ff-opp.open>.body{display:block}
   .ff-opp .ff-news{border:0;background:none;padding:4px 0;margin:0}
   .ff-claims{margin:4px 0 2px;padding-left:20px}
+  #ff-other .ff-oth{display:block;font-size:12px;font-weight:600;color:#4b2a8a;margin-top:4px;text-decoration:none}
+  #ff-other .ff-oth:hover{text-decoration:underline}
+  #ff-other .ff-oth.old{color:var(--ff-must)}
   .ff-claims li{margin:3px 0}
   `;
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -1451,7 +1468,7 @@
     render();
     progStart('Checking injured players', 12);
     getSleeper().catch(() => null).then(SL => loadStash(board.week, SL)).then(d => {
-      progEnd(); stashData = d;
+      progEnd(); stashData = d; saveStashAlerts(d).then(refreshStashAlerts);
       const back = savedSel && savedSel.stash ? d.list.find(x => x.id === savedSel.stash.id) : null;
       if (back) state.stash = back; else if (!state.stash && d.list.length) state.stash = d.list[0];
       render();
@@ -1470,9 +1487,11 @@
     const b = el('div', 'ff-board');
     const R = board.roster;
     // news about other players (role news, just dropped) shares one collapsed strip under the tabs, so the lineup stays put
-    const opp = [], drops = dropBanner(R);
+    const opp = [], drops = dropBanner(R), stash = stashBanner(R);
     if (newsAlerts.length) opp.push(newsBanner());
     if (drops) opp.push(drops);
+    if (stash) opp.push(stash.box);
+    renderOther();
     const tabs = el('div', 'ff-tabs');
     [['lineup', 'Lineup'], ['wire', 'Add / replace'], ['stash', 'Stash watch'], ['trends', 'Trends']].forEach(([v, label]) => {
       const t = el('button', 'ff-tabbtn' + (state.view === v ? ' on' : ''), label);
@@ -1487,7 +1506,7 @@
     });
     b.appendChild(tabs);
     if (opp.length) {
-      const n = newsAlerts.length + dropAlerts.filter(d => !R.players.some(p => p.id === d.id)).length;
+      const n = newsAlerts.length + dropAlerts.filter(d => !R.players.some(p => p.id === d.id)).length + (stash ? stash.n : 0);
       const strip = el('section', 'ff-opp' + (isOpen('opp') ? ' open' : ''));
       strip.appendChild(expander('opp', 'Opportunities · ' + n, strip));
       const body = el('div', 'body'); opp.forEach(x => body.appendChild(x)); strip.appendChild(body);
@@ -1728,11 +1747,10 @@
     });
     b.appendChild(sec);
   };
-  const renderLineup = (b, R, sumEl) => {
-    const week = board.week, L = computeLineup(R.players, week, SLOTS);
-    const now = (TEST && TEST.now) || Date.now(), G = gamePlan(R.players, week, L, now);
+  // the Lineup verdict: also saved per league, so your other league's tray can show it
+  const lineupVerdict = (R, week, now) => {
+    const L = computeLineup(R.players, week, SLOTS), G = gamePlan(R.players, week, L, now);
     const nm = p => p.name + ' (' + p.pos + ')';
-    const stat = p => (!R.kd && /^(K|DEF)$/.test(p.pos) ? 'loading...' : isNaN(p.m.avg) ? 'no recent scoring' : p.m.good + '/' + (p.m.played || '?') + ' good games, avg ' + f1(p.m.avg) + ', ' + formText(p.m) + (usageText(p.m) ? '; ' + usageText(p.m) : ''));
     const guarded = criticalIssue();
     let kind, headline, sub;
     if (guarded) { kind = 'no'; headline = 'NO RECOMMENDATION: the data is not trustworthy'; sub = guarded.msg; }
@@ -1743,6 +1761,13 @@
     // the one deadline that matters: the earliest questionable decision still open
     const next = G.rows.filter(r => !r.passed && isFinite(r.decideBy)).sort((x, y) => x.decideBy - y.decideBy)[0];
     const nextLine = guarded ? '' : next ? 'Next: decide ' + next.q.name + ' by ' + kickText(next.decideBy) : G.allLocked ? 'All your games have started' : 'Nothing to decide';
+    return { L, G, guarded, kind, headline, sub, nextLine };
+  };
+  const renderLineup = (b, R, sumEl) => {
+    const week = board.week, now = (TEST && TEST.now) || Date.now(), V = lineupVerdict(R, week, now), { L, G, guarded, kind, headline, sub, nextLine } = V;
+    saveLeagueSum(V);
+    const nm = p => p.name + ' (' + p.pos + ')';
+    const stat = p => (!R.kd && /^(K|DEF)$/.test(p.pos) ? 'loading...' : isNaN(p.m.avg) ? 'no recent scoring' : p.m.good + '/' + (p.m.played || '?') + ' good games, avg ' + f1(p.m.avg) + ', ' + formText(p.m) + (usageText(p.m) ? '; ' + usageText(p.m) : ''));
     if (sumEl) { sumEl.className = kind; sumEl.textContent = headline + (nextLine ? ' · ' + nextLine : ''); }
     b.appendChild(el('h3', null, 'Week ' + week + ' start / sit'));
     const box = el('div', 'ff-verdict ' + kind); box.append(el('div', 'hd', headline), el('div', null, sub));
@@ -2008,6 +2033,40 @@
     newsAlerts = roleNews(SL).filter(n => free.has(normName(n.name)) && !mine.has(normName(n.name)) && !newsSeen.includes(newsKey(n))).slice(0, 3);
     render();
   };
+  const stashBanner = R => {
+    const mine = new Set(R.players.map(p => p.id)), list = stashAlerts.filter(c => !mine.has(c.id));
+    if (!list.length) return null;
+    const box = el('div', 'ff-news');
+    box.appendChild(el('div', 'hd', 'Worth stashing: ' + list.map(c => c.name).join(', ')));
+    list.forEach(c => box.appendChild(el('div', 'item', c.name + ' (' + c.team + ' ' + c.pos + '): ' + c.ros + '% rostered across Yahoo. ' + c.fit + '. ' + (clearText(c.status) || c.status) + '.')));
+    box.appendChild(el('div', 'nt', 'From the Stash watch check on ' + new Date(list[0].at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + '. Read his note before you claim.'));
+    const open = el('button', 'ff-btn', 'Open Stash watch'), ok = el('button', 'ff-btn', 'Got it');
+    open.onclick = e => { e.stopPropagation(); state.view = 'stash'; if (!stashData || stashData.week !== board.week) loadStashView(); else render(); };
+    ok.onclick = async e => { e.stopPropagation(); const seen = (await kvGet(stashSeenKey)) || []; await kvSet(stashSeenKey, seen.concat(list.map(c => c.id)).slice(-60)); stashAlerts = []; render(); };
+    box.append(open, ok);
+    return { box, n: list.length };
+  };
+  // ---- Other leagues you belong to: their last saved lineup verdict, read from storage only ---------------------
+  const leagueSumKey = id => 'leagueSum:' + id;
+  let otherLeagues = [];
+  const loadOtherLeagues = async () => {
+    let ids = [];
+    try { ids = Object.keys(localStorage).filter(k => /^ff:team:\d+$/.test(k)).map(k => k.slice(8)).filter(id => id !== leagueId); } catch (e) { /* storage blocked */ }
+    const out = [];
+    for (const id of ids) { const h = await kvGet(leagueSumKey(id)); if (h && h.t && h.headline && /^\d+$/.test(String(h.team))) out.push(Object.assign({ id }, h)); }
+    otherLeagues = out;
+  };
+  const saveLeagueSum = v => kvSet(leagueSumKey(leagueId), { t: Date.now(), name: league.name, team: league.teamId, headline: v.headline, next: v.nextLine || '' });
+  const ageText = t => { const m = Math.round((Date.now() - t) / 60000); return m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + 'h ago' : Math.round(m / 1440) + 'd ago'; };
+  const renderOther = () => {
+    let box = document.getElementById('ff-other');
+    if (!box) { const sum = document.getElementById('ff-sum'); if (!sum) return; box = el('div'); box.id = 'ff-other'; sum.after(box); }
+    box.replaceChildren(...otherLeagues.map(o => {
+      const a = el('a', 'ff-oth' + (Date.now() - o.t > 864e5 ? ' old' : ''), o.name + ': ' + o.headline + (o.next ? ' · ' + o.next : '') + ' · ' + ageText(o.t));
+      a.href = '/f1/' + o.id + '/' + o.team;
+      return a;
+    }));
+  };
   const newsBanner = () => {
     const box = el('div', 'ff-news');
     box.appendChild(el('div', 'hd', 'Role news: free in ' + league.name));
@@ -2247,6 +2306,8 @@
       render();
       mark('roster shown');
       refreshNews();                                       // from notes and free-agent lists already saved: no requests
+      Promise.all([refreshStashAlerts(), loadOtherLeagues()]).then(() => render()).catch(() => {});
+      saveLeagueSum(lineupVerdict(roster, week, (TEST && TEST.now) || Date.now()));
       if (backToStash && !stashData) loadStashView();      // back from a name search made in the Stash tab
       if (backToTrends) openTrends();                      // ...or in the Trends tab
       if (state.radarPos) {
@@ -2335,7 +2396,7 @@
     }, 800);
   };
   if (TEST) {
-    TEST.api = { claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
+    TEST.api = { lineupVerdict, claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
       GOOD, formText, summarizeTx, computeMovers, computeStreaks, checkRoster, pct, normName, nameKey, roleOf, roleNews, outLevel, proven, parseRoster, compare, coversBye, surplusStarter, seasonDone, irOption, suggestReplace, computeLineup, emptySlots, needsOf, startScore, setSlots: v => { SLOTS = v; }, getPending: () => pending, metrics, state, getYahooCount: () => yCount };
   }
   // The first visit to a league reads its settings; after that they come from storage and are re-read weekly.
