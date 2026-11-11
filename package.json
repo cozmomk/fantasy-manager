@@ -9,7 +9,8 @@
     "check": "npm run lint && npm test",
     "userscript": "node scripts/userscript.js",
     "serve": "node scripts/userscript.js --serve",
-    "publish:friends": "npm run check && node scripts/userscript.js --publish"
+    "publish:friends": "npm run check && node scripts/userscript.js --publish",
+    "release": "npm run check && node scripts/userscript.js --release"
   },
   "dependencies": {
     "playwright-core": "^1.49.0"

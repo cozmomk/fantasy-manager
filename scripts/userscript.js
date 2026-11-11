@@ -3,6 +3,7 @@
 //   node scripts/userscript.js            writes dist/fantasy-manager.user.js
 //   node scripts/userscript.js --serve    builds, then serves http://localhost:8787/fantasy-manager.user.js
 //   node scripts/userscript.js --publish  uploads the committed code to the secret gist that friends install from
+//   node scripts/userscript.js --release  attaches the committed code to a new GitHub Release: the public download
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -18,11 +19,16 @@ export const FILE = 'fantasy-manager.user.js';
 const GIST_FILE = path.join(ROOT, 'scripts', 'gist-id.txt');
 
 export const gistBase = (user, id) => `https://gist.githubusercontent.com/${user}/${id}/raw`;
+// The public download is the file attached to the latest release of this repo. GitHub keeps this address pointing at
+// the newest release, so it doubles as the update address: every installed copy updates itself when a release is made.
+export const RELEASE_REPO = 'cozmomk/fantasy-manager';
+export const releaseBase = repo => `https://github.com/${repo}/releases/latest/download`;
+const run = (cmd, args) => execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8' }).trim();
+const requireCommitted = () => { if (run('git', ['status', '--porcelain', 'extension/content.js', 'scripts/userscript.js'])) throw new Error('Commit your changes first: only committed code is published.'); };
 
 // Friends get every publish automatically, so only committed code goes out. --create makes the gist the first time.
 function publish() {
-  const run = (cmd, args) => execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8' }).trim();
-  if (run('git', ['status', '--porcelain', 'extension/content.js', 'scripts/userscript.js'])) throw new Error('Commit your changes first: only committed code is published.');
+  requireCommitted();
   const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ff-')), FILE);
   fs.writeFileSync(tmp, build());
   let id = fs.existsSync(GIST_FILE) ? fs.readFileSync(GIST_FILE, 'utf8').trim() : '';
@@ -37,19 +43,31 @@ function publish() {
   console.log(`Published. Install link: ${base}/${FILE}`);
 }
 
+// A release is versioned by the commit it was built from, so rebuilding the same commit gives the same version.
+function release() {
+  requireCommitted();
+  const when = Number(run('git', ['log', '-1', '--format=%ct'])) * 1000, v = version(when);
+  const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ff-')), FILE);
+  fs.writeFileSync(tmp, build(releaseBase(RELEASE_REPO), when));
+  const notes = run('git', ['log', '-1', '--format=%s']) + '\n\nInstall or update: open ' + releaseBase(RELEASE_REPO) + '/' + FILE +
+    ' in Chrome with Tampermonkey or Violentmonkey installed, then click Install. Installed copies update themselves from that address.';
+  run('gh', ['release', 'create', 'v' + v, tmp, '--repo', RELEASE_REPO, '--title', 'Fantasy Manager ' + v, '--notes', notes, '--latest']);
+  console.log(`Released v${v}. Download: ${releaseBase(RELEASE_REPO)}/${FILE}`);
+}
+
 // The manager only updates when @version goes up, so derive it from the source file's modified time.
 export function version(mtime) {
   const d = new Date(mtime), p = n => String(n).padStart(2, '0');
   return `1.${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-export function build(base = `http://localhost:${PORT}`) {
+export function build(base = `http://localhost:${PORT}`, when = fs.statSync(SRC).mtimeMs) {
   const body = fs.readFileSync(SRC, 'utf8');
   const header = [
     '// ==UserScript==',
     '// @name         Fantasy Manager Highlights',
     '// @namespace    fantasy-manager',
-    `// @version      ${version(fs.statSync(SRC).mtimeMs)}`,
+    `// @version      ${version(when)}`,
     '// @description  Read-only decision board for your Yahoo Fantasy Football leagues. Never adds, drops or submits anything.',
     '// @match        https://football.fantasysports.yahoo.com/f1/*',   // the script itself only acts on player lists, settings, the league home, your team, the matchup and the add page
     '// @run-at       document-idle',
@@ -64,6 +82,7 @@ export function build(base = `http://localhost:${PORT}`) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv.includes('--publish')) publish();
+else if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv.includes('--release')) release();
 else if (process.argv[1] === fileURLToPath(import.meta.url)) {
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, build());

@@ -1,7 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { build, version, FILE } from '../scripts/userscript.js';
+import { build, version, releaseBase, RELEASE_REPO, FILE } from '../scripts/userscript.js';
 import { launch, openBoard, waitForBoard } from './helpers.js';
 
 describe('userscript build', () => {
@@ -12,6 +12,12 @@ describe('userscript build', () => {
     assert.match(out, /@grant\s+none/);
     assert.ok(out.includes(`@updateURL    http://localhost:9999/${FILE}`));
     assert.ok(out.endsWith(fs.readFileSync(new URL('../extension/content.js', import.meta.url), 'utf8')));
+  });
+  it('a release build installs from, and updates from, the latest release of the public repo', () => {
+    const out = build(releaseBase(RELEASE_REPO), Date.parse('2026-11-11T09:30:00'));
+    const url = `https://github.com/${RELEASE_REPO}/releases/latest/download/${FILE}`;
+    assert.ok(out.includes(`@updateURL    ${url}`) && out.includes(`@downloadURL  ${url}`));
+    assert.match(out, /@version\s+1\.20261111\.093000/, 'versioned by the commit time it was given');
   });
   it('the version goes up whenever the source file changes, so the manager sees the update', () => {
     assert.ok(version(Date.parse('2026-10-13T10:00:00')) < version(Date.parse('2026-10-13T10:00:01')));

@@ -4,19 +4,23 @@ Helps you decide who to add and who to replace, using scoring track record, mome
 Read-only: it adds a board to the Yahoo page and reads other Yahoo views and Sleeper's public data with plain
 GET requests using your existing login. It never clicks, adds, drops or submits anything.
 
-## Install (one time)
+## Install
+
+The usual way is the Tampermonkey userscript: see [Install in the main README](../README.md#install). To load this
+folder as an unpacked Chrome extension instead:
 1. Open `chrome://extensions` in Chrome and turn on **Developer mode**.
 2. Click **Load unpacked** and choose this `extension/` folder.
-3. Open a Yahoo **Players** list for one position (QB, RB, WR, TE or K) in either league. The board appears at the top.
+3. Open your team page (or any **Players** list) in a Yahoo league you belong to. The tray slides in from the right.
 
-After you edit `content.js`, click the reload arrow on the extension card, then refresh the Yahoo page.
+After you edit `content.js`, click the reload arrow on the extension card, then refresh the Yahoo page. Use either the
+userscript or the unpacked extension, not both.
 
 ## The board (three steps, top to bottom)
 1. **Your roster.** Every player with slot, bye, a 4-week bar chart (green = a good game for that position), and
    chips: KEEP (proven), OUT / OUT THIS WEEK (injury), WEAKEST BENCH (the suggested cut). Click anyone to make
    them the player you would replace. If one of your players is listed out and an IR slot is open, a "Compare
    using IR slot" button offers a free add.
-2. **Best available.** Buttons for QB, RB, WR, TE and K sit above the list: click one to scan that position (about 30
+2. **Best available.** Buttons for QB, RB, WR, TE, K and DEF sit above the list: click one to scan that position (about 30
    seconds the first time, then cached). The tray starts on whatever position Yahoo's list shows, but you never need
    to touch Yahoo's own filter. Ranked by actual scoring, then Yahoo and Sleeper momentum; injured players sink to
    the bottom. Click a row to compare him.
