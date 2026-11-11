@@ -1290,6 +1290,8 @@
   .ff-opp>.body{display:none}
   .ff-opp.open>.body{display:block}
   .ff-opp .ff-news{border:0;background:none;padding:4px 0;margin:0}
+  .ff-claims{margin:4px 0 2px;padding-left:20px}
+  .ff-claims li{margin:3px 0}
   `;
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const barsFor = (p, radar) => {
@@ -1370,8 +1372,8 @@
       !isNaN(startScore(x)) && !(startScore(x) < mine)).sort((a, b) => startScore(b) - startScore(a))[0] || null;
   };
   const neededQB = (players, p) => p.pos === 'QB' && !!SLOTS[SUPERFLEX] && players.filter(q => q.pos === 'QB' && q.slot !== 'IR' && q.out === 0).length <= 2;
-  const suggestReplace = roster => {
-    const bench = roster.players.filter(p => p.slot === 'BN' && !(p.out === 2 && roster.irFree && !seasonDone(p, roster.week)) && !coversBye(roster.players, roster.week, p) && !neededQB(roster.players, p));
+  const suggestReplace = (roster, skip) => {
+    const bench = roster.players.filter(p => p.slot === 'BN' && !(skip && skip.has(p.id)) && !(p.out === 2 && roster.irFree && !seasonDone(p, roster.week)) && !coversBye(roster.players, roster.week, p) && !neededQB(roster.players, p));
     const done = bench.find(p => seasonDone(p, roster.week));
     if (done) return done;
     const spare = bench.filter(p => surplusStarter(roster.players, roster.week, p)).sort(byRecord)[0];
@@ -1401,6 +1403,45 @@
     if (!roster.irFree) return null;
     return roster.players.filter(p => p.slot !== 'IR' && p.out >= 1 && (OUT_TAGS.has(p.injTag) || p.out === 2) && !seasonDone(p, roster.week)).sort((a, b) => b.out - a.out)[0] || null;
   };
+  // Doubtful is not an IR tag: with an IR slot open, the status cell says the move opens if Yahoo changes him to Out
+  const irNotYet = (p, roster) => roster.irFree > 0 && p.slot !== 'IR' && p.injTag === 'D';
+  // ---- Claim plan: for each roster opening at this position, a first choice and alternates if a claim fails --------
+  // An opening is a lineup hole this position can fill, an open bench spot, the room an IR move makes, or a drop. Each
+  // opening gets its own players and its own drop, so following the plan never adds more players than you have room for.
+  const claimPlan = (R, radar, pos, week) => {
+    if (!radar || !pos) return [];
+    const L = computeLineup(R.players, week, SLOTS), groups = [], usedC = new Set(), usedDrop = new Set();
+    const fits = slot => slot === pos || (FLEX[slot] || []).includes(pos);
+    const avail = radar.filter(c => c.out === 0 && c.pos === pos && !inPending(c, 'adds'));
+    const ir = irOption(R);
+    let free = R.benchFree || 0, irRoom = ir ? 1 : 0;
+    const room = () => {
+      if (free > 0) { free--; return { kind: 'free' }; }
+      if (irRoom > 0) { irRoom--; return { kind: 'ir', ir }; }
+      const d = suggestReplace(R, usedDrop);
+      if (!d) return null;
+      usedDrop.add(d.id);
+      return { kind: 'drop', drop: d };
+    };
+    const pick = ok => { const out = avail.filter(c => !usedC.has(c.id) && ok(c)).slice(0, 3); out.forEach(c => usedC.add(c.id)); return out; };
+    // 1. lineup holes: any healthy free player beats an empty slot
+    L.fixes.filter(f => !f.start && fits(f.slot)).forEach(f => {
+      if (groups.length >= 3) return;
+      const r = room(); if (!r) return;
+      const picks = pick(() => true);
+      if (picks.length) groups.push({ slot: f.slot, why: f.sit ? f.sit.name + ' is ' + f.why + ' and nobody on your bench can play ' + f.slot : 'your ' + f.slot + ' slot is empty', room: r, picks });
+    });
+    // 2. upgrades: a free player who clearly beats the player you would drop (an open spot needs no comparison)
+    while (groups.length < 3) {
+      const r = room(); if (!r) break;
+      const vs = r.kind === 'drop' ? r.drop : null;
+      const picks = pick(c => !vs || compare(c, vs, { roster: R.players, week }).kind === 'yes');
+      if (!picks.length) break;
+      groups.push({ slot: '', why: vs ? 'he clearly beats ' + vs.name + ' on the board\'s rules' : r.kind === 'ir' ? 'the room your IR move makes' : 'an open bench spot', room: r, picks });
+    }
+    return groups;
+  };
+  const clearText = status => (/^W \(/.test(status || '') ? 'waivers clear ' + status.slice(3, -1) : status === 'FA' ? 'free agent: add any time' : status || '');
   const doneText = (p, week) => p.name + ' is ' + (parseReturn(p.note, week).kind === 'season' ? 'out for the season' : 'not back before your playoffs end') + ' (his note, ' + p.note.date + '): drop him' + (p.slot === 'IR' ? ' to free your IR slot for a player who will return.' : ' rather than use an IR slot on him.');
 
   const openTrends = () => { trendData = null; render(); refreshTrends().then(render); loadBuzz(); };
@@ -1589,6 +1630,7 @@
       });
       b.appendChild(list);
       if (board.radar.unmatched && board.radar.unmatched.length) b.appendChild(el('div', 'ff-hint', "Also trending on Sleeper but not on this league's wire (rostered here, or not found): " + board.radar.unmatched.join(', ') + '.'));
+      renderClaimPlan(b, R);
     }
     // ---- 3. comparison -------------------------------------------------------------------------------
     b.appendChild(el('h3', null, '3. Comparison'));
@@ -1662,6 +1704,29 @@
     const btn = el('button', 'ff-btn', label);
     btn.onclick = e => { e.stopPropagation(); state.covering = covering || null; state.view = 'wire'; if (/^(QB|RB|WR|TE|K|DEF)$/.test(pos)) selectRadarPos(pos); else render(); };
     return btn;
+  };
+  const renderClaimPlan = (b, R) => {
+    const pos = state.radarPos, groups = claimPlan(R, board.radar, pos, board.week);
+    const sec = ffGroup('Claim plan · ' + pos, 'claims');
+    if (board.radar.notesPending) sec.appendChild(el('div', 'ff-hint', 'Checking injury notes first; the plan can change when they arrive.'));
+    if (!groups.length) { sec.appendChild(el('div', 'ff-hint', 'No ' + pos + ' claim beats your roster this week.')); b.appendChild(sec); return; }
+    sec.appendChild(el('div', 'ff-hint', 'Not submitted: make these claims in Yahoo, first choices first. Your waiver priority is ' + (R.prio || '?') + '.'));
+    groups.forEach(g => {
+      const x = ffRow('Option', 'option');
+      const room = g.room.kind === 'free' ? 'no drop needed (open bench spot)' : g.room.kind === 'ir' ? 'no drop needed after moving ' + g.room.ir.name + ' to IR in Yahoo' : 'drop ' + g.room.drop.name;
+      x.appendChild(el('span', 'l1', (g.slot ? 'Fill ' + g.slot : 'Add a ' + pos) + ' · ' + room));
+      const ol = el('ol', 'ff-claims');
+      g.picks.forEach((c, k) => {
+        const li = el('li'), cmp = el('button', 'ff-btn', 'Compare');
+        cmp.onclick = e => { e.stopPropagation(); state.cand = c; if (g.room.kind === 'drop') { state.rep = g.room.drop; state.repManual = true; } render(); showResult(); };
+        li.append(nameLink(c.name, c.id, () => { state.cand = c; }), ' (' + c.team + ') · ' + clearText(c.status) + (k ? ' · if the claim above fails' : ''), cmp);
+        ol.appendChild(li);
+      });
+      x.appendChild(ol);
+      x.appendChild(el('div', 'l3', 'Why: ' + g.why + '.'));
+      sec.appendChild(x);
+    });
+    b.appendChild(sec);
   };
   const renderLineup = (b, R, sumEl) => {
     const week = board.week, L = computeLineup(R.players, week, SLOTS);
@@ -1749,6 +1814,12 @@
       };
       irBox.appendChild(irBtn); opt.appendChild(irBox);
     }
+    if (!guarded && irP && !needFA) {                  // nothing to fill, but the IR move still opens a bench spot
+      const x = ffRow('Option', 'option');
+      x.append(el('b', null, 'Move ' + irP.name + ' to IR'), ' · opens 1 bench spot (' + healthText(irP) + '). ');
+      x.appendChild(findFor('', 'See best available'));
+      opt.appendChild(x);
+    }
     if (!guarded && R.benchFree) {
       const fpos = needFA ? (needFA.sit ? needFA.sit.pos : needFA.slot) : '', open = ffRow('Option', 'option');
       open.append('Open roster spot: ', el('b', null, 'you have ' + R.benchFree + ' empty bench slot' + (R.benchFree > 1 ? 's' : '')),
@@ -1779,7 +1850,7 @@
       if (to) who.appendChild(el('span', 'ff-tag', '→ ' + (to === 'BN' ? 'bench' : to)));                    // the move the advice above makes
       if (named.has(p.id) && p.kick && !p.locked) who.appendChild(el('span', 'ff-pill nx', kickText(p.kick.key)));   // narrow widths: the time the advice depends on
       who.appendChild(el('div', 'gm xr', p.bye === week ? 'Bye' : (p.game || p.gameLine || '')));   // the game sits under the name at M and L
-      const status = p.locked ? lockText(p) : a === 'ok' ? 'Healthy' : (a === 'q' ? 'Questionable' : AVAIL_TEXT[a]);
+      const status = (p.locked ? lockText(p) : a === 'ok' ? 'Healthy' : (a === 'q' ? 'Questionable' : AVAIL_TEXT[a])) + (irNotYet(p, R) ? ' · Doubtful: not IR-eligible yet' : '');
       tr.append(el('td', 'lab', p.slot), who, el('td', (below ? 'l' : 'e') + ' xc', isNaN(p.proj) ? '-' : f1(p.proj)), el('td', 'e', short(p)), el('td', 'e xxc', isNaN(p.startPct) ? '-' : p.startPct + '%'),
         el('td', p.locked || a === 'ok' || a === 'q' ? 'e' : 'l', status));
       tbl.appendChild(tr);
@@ -2264,7 +2335,7 @@
     }, 800);
   };
   if (TEST) {
-    TEST.api = { parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
+    TEST.api = { claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
       GOOD, formText, summarizeTx, computeMovers, computeStreaks, checkRoster, pct, normName, nameKey, roleOf, roleNews, outLevel, proven, parseRoster, compare, coversBye, surplusStarter, seasonDone, irOption, suggestReplace, computeLineup, emptySlots, needsOf, startScore, setSlots: v => { SLOTS = v; }, getPending: () => pending, metrics, state, getYahooCount: () => yCount };
   }
   // The first visit to a league reads its settings; after that they come from storage and are re-read weekly.

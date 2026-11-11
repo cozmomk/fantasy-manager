@@ -148,6 +148,20 @@ The rules sit behind "How this is judged" at the bottom.
 
 All of this reads the team page and notes the board already loads: it makes no extra Yahoo requests.
 
+## Claim plan and IR moves
+
+Under the best-available list, the **Add / replace** tab shows a **Claim plan** for the position you are looking at:
+one group per roster opening, each with a first choice, up to two alternates "if the claim above fails", who to drop
+and when waivers clear. Openings are filled in this order: lineup holes this position can fill (any healthy free player
+beats an empty slot), then an open bench spot, then the room an IR move makes ("after moving X to IR in Yahoo"), then
+a drop, where a claim is listed only if it clearly beats the player dropped. No two groups share a player or a drop, so
+following the plan never adds more players than you have room for. Nothing is submitted: make the claims in Yahoo.
+
+On the Lineup tab, an injured player who can go to your open IR slot gets an Option row ("Move X to IR · opens 1
+bench spot") even when no lineup hole needs filling. Yahoo's settings page does not list which tags a league allows on
+IR, so the tool uses Yahoo's standard rule (Out, IR or NA, or a long-term injury). A Doubtful player is not eligible
+yet: with an IR slot open, his status says so.
+
 ## Sharing with a friend
 
 `npm run publish:friends` runs the checks and uploads the committed code to a secret GitHub gist. The first time, make the gist with `npm run check && node scripts/userscript.js --publish --create`, which saves its id in `scripts/gist-id.txt` and prints the install link. Friends install Tampermonkey, turn on **Allow User Scripts** for it in Chrome's extension details, open the link and click Install. Tampermonkey then picks up each publish on its own, usually within a day. Anyone with the link can read the script, so keep the link to people you trust.

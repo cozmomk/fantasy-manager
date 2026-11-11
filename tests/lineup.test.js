@@ -492,6 +492,49 @@ describe('game day on the team page', () => {
   });
 });
 
+describe('claim plan and IR watch', () => {
+  const week6p = (url, b) => (/\/players/.test(url) ? b.replaceAll('Week 5 (proj)', 'Week 6 (proj)') : b);
+  const plan = page => page.locator('.ff-grp.claims');
+  const freeIR = () => { const brooks = players.find(p => p.id === '10'), saved = brooks.slot; brooks.slot = 'BN'; return () => { brooks.slot = saved; }; };
+  it('a lineup hole gets a first choice, alternates if a claim fails, the drop, and when waivers clear', async () => {
+    const { page, context } = await openBoard(browser, { pos: 'QB', mutate: week6p });
+    await waitForBoard(page);
+    const t = await plan(page).innerText();
+    assert.match(t, /Not submitted: make these claims in Yahoo/);
+    assert.match(t, /Fill QB · drop \S/);
+    assert.match(t, /Kirk Cousins \(LV\) · waivers clear Oct 14/);
+    assert.match(t, /if the claim above fails/);
+    assert.match(t, /Why: Joe Burrow is on bye this week and nobody on your bench can play QB/);
+    assert.ok(await plan(page).locator('li').count() <= 3);
+    assert.doesNotMatch(t, /Caleb Williams/, 'never plans a claim on a player who is out');
+    await context.close();
+  });
+  it('the room an IR move makes is used before anyone is dropped', async () => {
+    const restore = freeIR();
+    try {
+      const { page, context } = await openBoard(browser, { pos: 'RB' });
+      await waitForBoard(page);
+      assert.match(await plan(page).innerText(), /Add a RB · no drop needed after moving Jonah Coleman to IR in Yahoo/);
+      await context.close();
+    } finally { restore(); }
+  });
+  it('the Lineup tab offers an eligible IR move even with no hole to fill, and says when Doubtful is not eligible yet', async () => {
+    const restore = freeIR();
+    const cm = players.find(p => p.id === '2'), savedInj = cm.inj;
+    try {
+      const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID) });
+      await waitForBoard(page, { radar: false });
+      assert.match(await page.locator('.ff-board').innerText(), /Move Jonah Coleman to IR · opens 1 bench spot/);
+      await context.close();
+      cm.inj = 'D';
+      const second = await openBoard(browser, { url: teamUrl(TEAM_ID) });
+      await waitForBoard(second.page, { radar: false });
+      assert.match(await second.page.locator('.ff-lineup tr', { hasText: 'Croskey-Merritt' }).innerText(), /Doubtful: not IR-eligible yet/);
+      await second.context.close();
+    } finally { restore(); cm.inj = savedInj; }
+  });
+});
+
 describe('the add page', () => {
   const addUrl = pid => `https://football.fantasysports.yahoo.com/f1/${LEAGUE_ID}/addplayer?apid=${pid}`;
   it('opens on the comparison for the player being added', async () => {
