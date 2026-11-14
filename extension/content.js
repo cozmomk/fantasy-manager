@@ -442,6 +442,9 @@
   const availability = (p, week) => (p.slot === 'IR' ? 'ir' : p.out === 2 ? 'out' : p.out === 1 ? 'outweek' : p.bye === week ? 'bye' : p.injTag === 'Q' ? 'q' : 'ok');
   const AVAIL_TEXT = { ir: 'on IR', out: 'out for a long stretch', outweek: 'out this week', bye: 'on bye this week' };
   const canPlay = (p, week) => { const a = availability(p, week); return a === 'ok' || a === 'q'; };
+  // Questionable, and Yahoo projects under a quarter of his recent average: Yahoo expects him to sit. Recent scoring
+  // cannot see that, so he is never started from the bench or named as a backup.
+  const yahooSits = p => p.injTag === 'Q' && !isNaN(p.proj) && !isNaN(p.m.avg) && p.m.avg > 0 && p.proj < p.m.avg * 0.25;
   // Kickoff order. Yahoo writes a scheduled game as "Sun 1:05 pm vs Sea", in your time zone. Any other game line that is
   // not a bye (a live score, "Final ...", a postponed game) means he cannot be planned around: he is locked, never moved.
   const KICK_RE = /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (\d{1,2}):(\d\d) ([ap]m) (?:vs|@) /;
@@ -482,7 +485,7 @@
     const starters = players.filter(p => !/^(BN|IR)$/.test(p.slot));
     const bench = players.filter(p => p.slot === 'BN');
     const used = new Set(), fixes = [], swaps = [];
-    const best = (list, slot) => list.filter(b => !used.has(b.id) && !b.locked && canPlay(b, week) && slotFits(b, slot))
+    const best = (list, slot) => list.filter(b => !used.has(b.id) && !b.locked && !yahooSits(b) && canPlay(b, week) && slotFits(b, slot))
       .sort((a, b) => ((a.injTag === 'Q' ? 1 : 0) - (b.injTag === 'Q' ? 1 : 0)) || ((isNaN(startValue(b)) ? -1 : startValue(b)) - (isNaN(startValue(a)) ? -1 : startValue(a))))[0];   // healthy first, then best scorer (K/DEF: best projection)
     for (const s of starters) {                       // 1. starters who cannot play this week
       if (canPlay(s, week) || s.locked) continue;   // a locked starter cannot be moved; the lineup table labels him
@@ -497,7 +500,7 @@
     }
     const healthy = starters.filter(s => canPlay(s, week)), cands = [];
     for (const b of bench) {                           // 2. clear upgrades among healthy starters
-      if (used.has(b.id) || b.locked || !canPlay(b, week)) continue;
+      if (used.has(b.id) || b.locked || yahooSits(b) || !canPlay(b, week)) continue;
       for (const s of healthy) if (!s.locked && slotFits(b, s.slot) && betterToStart(b, s)) cands.push({ b, s, gain: byProjection(b, s) ? b.proj - s.proj : startScore(b) - startScore(s) });
     }
     cands.sort((x, y) => y.gain - x.gain);
@@ -514,9 +517,12 @@
   // Worked out on one copy of the lineup with the tab's own fixes and swaps applied, so no two pieces of advice disagree:
   // a tip never names a player being benched, and a backup is never a player already starting or promised to another row.
   const PRACTICE = /did not practice|\bDNP\b|limited|full participant|practiced fully|sat out|practice/i;
+  const THIS_WEEK = /this week|today|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday/i, PAST_WEEK = /\b(last week|Week \d+)\b/i;
   const practiceLine = note => {
     if (!note || !note.text) return '';
-    const hit = sentencesOf(note.text.replace(/Advice:\s*/, '. ')).find(x => PRACTICE.test(x));
+    const [lead, advice = ''] = note.text.split(/Advice:\s*/);
+    const lines = sentencesOf(lead).concat(sentencesOf(advice)).filter(x => PRACTICE.test(x));   // the note's news comes before its advice
+    const hit = lines.find(x => sentencesOf(lead).includes(x)) || lines.find(x => THIS_WEEK.test(x) && !PAST_WEEK.test(x)) || lines.find(x => !PAST_WEEK.test(x)) || lines[0];
     return hit ? hit.trim().slice(0, 160) : '';
   };
   const gamePlan = (players, week, L, now) => {
@@ -528,7 +534,7 @@
     // 1. an early game in the flex and a later game of the same position in its own slot: swap them, one tip at a time
     const tips = [], inTip = new Set();
     Object.keys(FLEX).forEach(fs => players.filter(F => slotOf.get(F.id) === fs).forEach(F => {
-      if (!planned(F) || inTip.has(F.id)) return;
+      if (!planned(F) || inTip.has(F.id) || availability(F, week) === 'q') return;   // questionable: the flex keeps his cover widest
       const D = players.filter(d => d.pos === F.pos && slotOf.get(d.id) === F.pos && planned(d) && !inTip.has(d.id) && d.kick.key > F.kick.key)
         .sort((a, b) => b.kick.key - a.kick.key)[0];
       if (!D) return;
@@ -539,7 +545,7 @@
     const reserved = new Set(), rows = [], order = p => (p.kick ? p.kick.key : 1e9);
     players.filter(p => starting(p) && !p.locked && availability(p, week) === 'q').sort((a, b) => order(a) - order(b)).forEach(q => {
       const slot = slotOf.get(q.id), sv = p => (isNaN(startValue(p)) ? -1 : startValue(p));
-      const backup = players.filter(b => slotOf.get(b.id) === 'BN' && !reserved.has(b.id) && !b.locked && canPlay(b, week) && slotFits(b, slot))
+      const backup = players.filter(b => slotOf.get(b.id) === 'BN' && !reserved.has(b.id) && !b.locked && !yahooSits(b) && canPlay(b, week) && slotFits(b, slot))
         .sort((a, b) => ((a.injTag === 'Q' ? 1 : 0) - (b.injTag === 'Q' ? 1 : 0)) || (sv(b) - sv(a)))[0] || null;
       if (backup) reserved.add(backup.id);
       // the last moment you can act is when he or his backup kicks off; you learn whether he plays at the inactives
@@ -1831,6 +1837,7 @@
               : 'If out, start ' + r.backup.name + ' · decide by ' + kickText(r.decideBy);
         x.appendChild(el('div', 'l2', l2));
         const bits = [r.practice ? 'Practice: ' + r.practice + (r.q.note && r.q.note.date ? ' (note, ' + r.q.note.date + ')' : '') : 'No practice report in his latest note'];
+        if (yahooSits(r.q)) bits.unshift('Yahoo projects ' + f1(r.q.proj) + ': it expects him to sit');
         if (!isNaN(r.knowAt)) bits.push("you'll know at " + kickText(r.knowAt) + ' (inactives)');
         if (r.backup && r.backup.injTag === 'Q') bits.push('Backup ' + r.backup.name + ' is also questionable');
         if (r.backup && r.backup.kick) bits.push(r.backup.name + ' kicks off ' + kickText(r.backup.kick.key));

@@ -146,6 +146,11 @@ The rules sit behind "How this is judged" at the bottom.
   starting or promised to another row), the last moment you can act (when he or his backup kicks off), when you'll know
   (inactives, 90 minutes before his kickoff), and the latest practice sentence from his note. If the backup plays before
   the inactives come out, it says you must decide before you know. A deadline that has passed is greyed out.
+- **When Yahoo expects a questionable player to sit.** A questionable player Yahoo projects under a quarter of his recent
+  average is never started from the bench or named as a backup, and his row says Yahoo expects him to sit. Recent
+  scoring cannot see that, so this is the one place the offense rules defer to Yahoo's projection.
+- **A questionable starter in the flex stays there**, so any bench player of a flex position can still replace him;
+  the flex-order tip never moves him out of it.
 - Rows the advice changes are tagged in the lineup table ("→ RB", "→ bench"). At narrow widths the details fold
   behind "More" and players named in the advice show their kickoff time.
 - Role news and "just dropped" alerts share one "Opportunities" line under the tabs; open it to read them.

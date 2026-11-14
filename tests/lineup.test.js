@@ -380,6 +380,26 @@ describe('game day: kickoff order, locked players, questionable starters', () =>
   before(async () => { ({ page, context } = await openBoard(browser, { pos: 'WR' })); await waitForBoard(page); });
   after(async () => { await context.close(); });
 
+  it('a questionable player Yahoo projects near zero is never started from the bench or named as a backup', async () => {
+    const sits = await lineup(page, [K('s', 'WR', 'W/R/T', 8, SUN_125P), K('b', 'RB', 'BN', 11.9, SUN_10A, { good: 3, p: { injTag: 'Q', proj: 0.1 } })]);
+    assert.deepEqual(sits.swaps, [], 'Yahoo 0.1 against a recent average of 11.9: Yahoo expects him to sit');
+    const plays = await lineup(page, [K('s', 'WR', 'W/R/T', 8, SUN_125P), K('b', 'RB', 'BN', 11.9, SUN_10A, { good: 3, p: { injTag: 'Q', proj: 9 } })]);
+    assert.deepEqual(plays.swaps, [['W/R/T', 's', 'b']], 'a questionable player Yahoo still projects normally can be started');
+    const backup = await plan(page, [K('q', 'WR', 'WR', 10, SUN_125P, { p: { injTag: 'Q' } }), K('b', 'WR', 'BN', 9, SUN_10A, { p: { injTag: 'Q', proj: 0.2 } })]);
+    assert.equal(backup.rows[0].backup, null);
+  });
+  it('a questionable starter in the flex stays there, where a bench player can still replace him', async () => {
+    const r = await plan(page, [K('f', 'RB', 'W/R/T', 10, SUN_10A - 210, { p: { injTag: 'Q' } }), K('d', 'RB', 'RB', 10, SUN_10A), K('w', 'WR', 'BN', 9, SUN_125P)]);
+    assert.deepEqual(r.tips, []);
+    assert.equal(r.rows[0].backup, 'w', 'the bench WR covers the flex');
+  });
+  it('the practice line is this week\'s news, not the advice\'s recap of last week', async () => {
+    const text = 'Amon-Ra St. Brown (ribs) is questionable to play in Week 10 against the Patriots. Advice: St. Brown was listed as questionable in Week 9 after practicing in a limited capacity all week. He managed to suit up on game day. He was limited in all three practices this week and once again got the questionable tag.';
+    const lead = 'Stevenson was a limited participant in Friday\'s practice. Advice: He practiced fully last week.';
+    const r = await page.evaluate(([a, b]) => [window.__FF_TEST__.api.practiceLine({ text: a }), window.__FF_TEST__.api.practiceLine({ text: b })], [text, lead]);
+    assert.match(r[0], /^He was limited in all three practices this week/);
+    assert.match(r[1], /^Stevenson was a limited participant in Friday's practice/);
+  });
   it('reads kickoff order and times, and treats anything but a scheduled game or a bye as started', async () => {
     const r = await page.evaluate(() => {
       const a = window.__FF_TEST__.api, k = l => a.parseKick(l).key;
