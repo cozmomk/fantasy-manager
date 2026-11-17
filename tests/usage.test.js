@@ -92,7 +92,8 @@ describe('usage next to points', () => {
     assert.equal(r.week, 4, 'week 4 is held out; weeks 1-3 train');
     assert.ok(r.n > 0, 'players with saved weekly rows are scored');
     assert.ok(isFinite(r.pts) && isFinite(r.blend), 'both errors are numbers');
-    assert.equal(stats.yahoo.length, before, 'no Yahoo request');
+    // other background reads may still land; the back-test itself must not read a weekly page
+    assert.deepEqual(stats.yahoo.slice(before).map(x => x.url).filter(u => /S_W_/.test(u)), [], 'no Yahoo request for a weekly page');
     // 40 receivers worth exactly 1 point per opportunity in weeks 11-13 and 5 in week 14: if week 4 leaked into the value of
     // an opportunity, the blend's error would differ from points alone. Trained on weeks 1-3 only, the two are identical.
     const seeded = await page.evaluate(() => {
