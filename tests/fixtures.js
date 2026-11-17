@@ -99,9 +99,17 @@ export function listPage({ pos = 'O', status = 'A', stat = 'S_PW_5', fteam, sort
     return `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`;
   }).join('');
   return `<!doctype html><html><head><title>Player List | Fantasy Football | Yahoo! Sports</title></head><body>
-    <div>Stats: Week 5 (proj)</div>
+    <div>Stats: Week ${(/^S_PW_(\d+)$/.exec(stat) || [0, 5])[1]} (proj)</div>
     <table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></body></html>`;
 }
+
+// The matchup page header as Yahoo lays it out (checked 2026-11-16): both teams, records, and Yahoo's win probability
+export const MATCHUP = { pct: 55 };
+export const matchupHeader = () => {
+  const me = MATCHUP.pct >= 50 ? ['Favorite ' + MATCHUP.pct + '%', 'Projected Winner', (100 - MATCHUP.pct) + '% Underdog'] : ['Underdog ' + MATCHUP.pct + '%', (100 - MATCHUP.pct) + '% Favorite', 'Projected Winner'];
+  return `<section><div><span>Week 5: Oct 6 - Oct 12</span></div><div><a>${TEAM_NAME}</a><span>Test Manager</span><span>4-5-0 | 8th</span></div>` +
+    `<span>vs</span><div><a>Rival Squad</a><span>brian</span><span>6-3-0 | 2nd</span></div><div><span>${me[0]}</span><span>${me[1]}</span><span>${me[2]}</span></div></section>`;
+};
 
 // Yahoo's "Transaction Trends" page: adds, drops and trades across Yahoo's leagues for players available to you
 export function buzzPage(pos = 'WR') {
@@ -115,9 +123,9 @@ export function buzzPage(pos = 'WR') {
     <table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></body></html>`;
 }
 
-export function teamPage() {
+export function teamPage(ptsOf) {
   const mine = players.filter(p => p.mine);
-  const mk = list => list.map((p, i) => `<tr><td>${p.slot}</td><td></td><td>${nameCell(p)}<span class="ysf-player-detail Nowrap Fz-xxs">${p.gameLine || (p.bye === 6 ? 'Bye - No game this week' : `Sun 1:00 pm ${i % 2 ? '@' : 'vs'} Kc`)}</span></td><td>${p.bye}</td>${p.bye === 6 ? '<td colspan="3">Bye</td><td>95%</td>' : `<td>10.00</td><td>${(8 + i * 1.25).toFixed(2)}</td><td>${60 - i}%</td>`}</tr>`).join('');
+  const mk = list => list.map((p, i) => `<tr><td>${p.slot}</td><td></td><td>${nameCell(p)}<span class="ysf-player-detail Nowrap Fz-xxs">${p.gameLine || (p.bye === 6 ? 'Bye - No game this week' : `Sun 1:00 pm ${i % 2 ? '@' : 'vs'} Kc`)}</span></td><td>${p.bye}</td>${p.bye === 6 ? '<td colspan="3">Bye</td><td>95%</td>' : `<td>${ptsOf ? f2(ptsOf(p)) : '10.00'}</td><td>${(8 + i * 1.25).toFixed(2)}</td><td>${60 - i}%</td>`}</tr>`).join('');
   const head = '<tr><th>Pos</th><th>Edit</th><th>Offense</th><th>Bye</th><th>Fan Pts</th><th>Proj Pts</th><th>% Start</th><th>% Ros</th></tr>';
   const t = (id, list) => `<table id="${id}">${head}<tr><th></th></tr>${mk(list)}</table>`;
   return `<!doctype html><html><body><div>Waiver Priority: 3rd</div>
@@ -174,8 +182,10 @@ export function yahooResponse(url) {
   const path = u.pathname, q = u.searchParams;
   if (path === `/f1/${LEAGUE_ID}/players`) return { type: 'text/html', body: listPage({ pos: q.get('pos') || 'O', status: q.get('status') || 'A', stat: q.get('stat1') || 'S_PW_5', fteam: q.get('fteam') && q.get('fteam') !== 'NONE' ? q.get('fteam') : null, sort: q.get('sort') || 'PR', count: q.get('count') || 0 }) };
   if (path === `/f1/${LEAGUE_ID}/${TEAM_ID}`) return { type: 'text/html', body: teamPage() };
+  // a past week on your team page: the slots you set that week and what each player scored (week 4 in the fixtures)
+  if (path === `/f1/${LEAGUE_ID}/${TEAM_ID}/team`) return { type: 'text/html', body: teamPage(p => p.weeks[(+q.get('week') || 4) - 1] ?? 0) };
   if (path === `/f1/${LEAGUE_ID}`) return { type: 'text/html', body: '<!doctype html><html><body><h2>Week 6 Matchups</h2><div>Not started yet</div></body></html>' };
-  if (path === `/f1/${LEAGUE_ID}/matchup`) return { type: 'text/html', body: teamPage().replace('</body>', '<div>Week 5: Oct 6 - Oct 12</div></body>') };
+  if (path === `/f1/${LEAGUE_ID}/matchup`) return { type: 'text/html', body: teamPage().replace('<body>', '<body>' + matchupHeader()).replace('</body>', '<div>Week 5: Oct 6 - Oct 12</div></body>') };
   if (path === `/f1/${LEAGUE_ID}/playernote`) return { type: 'application/json', body: noteJson(q.get('pid')) };
   if (path === `/f1/${LEAGUE_ID}/transactions`) return { type: 'text/html', body: transactionsPage() };
   if (path === `/f1/${LEAGUE_ID}/buzzindex`) return { type: 'text/html', body: buzzPage(q.get('pos') || 'WR') };

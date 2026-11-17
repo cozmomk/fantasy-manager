@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { launch, openBoard, waitForBoard, CONTENT_JS } from './helpers.js';
+import { launch, openBoard, waitForBoard, teamUrl, CONTENT_JS } from './helpers.js';
+import { TEAM_ID } from './fixtures.js';
 
 let browser;
 before(async () => { browser = await launch(); });
@@ -28,7 +29,18 @@ describe('per-league role news alert', () => {
     assert.match(await page.locator('.ff-opp > .ff-more').innerText(), /Opportunities · 1/);
     assert.match(t, /Darius Cooper \(WR, PHI\) is named for "more reps"/);
     assert.match(t, /While Tyquan Thornton is out, Darius Cooper will handle more reps/);
+    assert.match(t, /Room: (open bench spot|move \S.* to IR first|drop \S.* \(|no safe drop right now)/, 'the alert says where he would go');
     assert.doesNotMatch(t, /Tyquan Thornton \(/, 'the injured player is not the news');
+    await context.close();
+  });
+
+  it('on your team page, with no fresh free-agent list, the news reads that position\'s list once and still shows', async () => {
+    const { page, context, stats } = await openBoard(browser, { url: teamUrl(TEAM_ID), mutate: withNews('Darius Cooper') });
+    await waitForBoard(page, { radar: false });
+    await openNews(page);
+    assert.match(await banner(page).innerText(), /Darius Cooper \(WR, PHI\) is named for "more reps"/);
+    const lists = stats.yahoo.map(r => r.url).filter(u => /status=A/.test(u) && /pos=WR/.test(u) && /S_S_2026/.test(u));
+    assert.ok(lists.length >= 1 && lists.length <= 2, 'one free WR list read for the news (the snapshot may reuse it): ' + lists.length);
     await context.close();
   });
 

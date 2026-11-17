@@ -127,7 +127,7 @@ Then open `http://localhost:8787/fantasy-manager.user.js` in Chrome and click In
 
 ## Lineup tab (start / sit)
 
-On the league home page, your team page and the matchup page the tray opens on **Lineup**: starters who are out or on bye this week, the best healthy bench player for each slot, and clear upgrades (a bench player must beat a starter by 15% and 2 points; a proven starter needs more). It uses consistent scoring (last 4 weeks, weighted to the last 2), not one-week projections, and does not consider opponents. Kickers and defenses are the exception: they swing with the matchup, so start/sit for them goes by Yahoo's projection for the week, and a bench kicker or defense must be projected 1.5 points higher to swap in. The script now matches all `/f1/*` pages but only acts on player lists, settings, the league home page, your own team, the matchup and Yahoo's add page. On Yahoo's add page for a player (`addplayer?apid=...`) the tray opens on **Add / replace** with that player already compared against the roster player you would most likely drop, and the best available list for his position above it. It reads his weeks from the same list pages the wire scan uses, so it usually costs no extra requests, and it never touches Yahoo's drop checkboxes or Add button. At M and L widths the lineup table also shows Yahoo's projection (for reference only), the game and, at L, % started.
+On the league home page, your team page and the matchup page the tray opens on **Lineup**: starters who are out or on bye this week, the best healthy bench player for each slot, and clear upgrades (a bench player must beat a starter by 15% and 2 points; a proven starter needs more). It uses consistent scoring (last 4 weeks, weighted to the last 2) blended with usage (see "Usage counts in the score" below), not one-week projections. Opponents only add the odds line and close-call options described under "Playoff push". Kickers and defenses are the exception: they swing with the matchup, so start/sit for them goes by Yahoo's projection for the week, and a bench kicker or defense must be projected 1.5 points higher to swap in. The script now matches all `/f1/*` pages but only acts on player lists, settings, the league home page, your own team, the matchup and Yahoo's add page. On Yahoo's add page for a player (`addplayer?apid=...`) the tray opens on **Add / replace** with that player already compared against the roster player you would most likely drop, and the best available list for his position above it. It reads his weeks from the same list pages the wire scan uses, so it usually costs no extra requests, and it never touches Yahoo's drop checkboxes or Add button. At M and L widths the lineup table also shows Yahoo's projection (for reference only), the game and, at L, % started.
 
 ## Game day on the Lineup tab
 
@@ -155,7 +155,8 @@ The rules sit behind "How this is judged" at the bottom.
   behind "More" and players named in the advice show their kickoff time.
 - Role news and "just dropped" alerts share one "Opportunities" line under the tabs; open it to read them.
 
-All of this reads the team page and notes the board already loads: it makes no extra Yahoo requests.
+All of this reads the team page and notes the board already loads. The one exception is the inactives check under
+"Playoff push": on game day it re-reads a questionable starter's note.
 
 ## Claim plan and IR moves
 
@@ -197,6 +198,52 @@ own defense's number costs one extra list page, loaded with your kicker and defe
 **Yahoo vs record.** When a fix or swap on the Lineup tab involves a player Yahoo projects at least 40% above or below
 his recent average, the comparison table adds a "Yahoo vs record" row with both numbers ("Yahoo 18.0 vs his recent
 average 5.0 (+260%)"). The advice still follows recent scoring for offense; the row just shows that Yahoo disagrees.
+
+## Playoff push
+
+Added 2026-11-16. Each extra Yahoo read below happens after the board is drawn, one after another through the same
+paced queue, and the tray redraws once when they finish. If a page can't be read, its line is left out.
+
+- **Room named in every add alert.** Stash alerts and role news end with where the player would go: "Room: open bench
+  spot", "Room: move X to IR first", "Room: drop Shrader (your second kicker)" or "Room: no safe drop right now". A second
+  kicker or defense counts as spare when you roster more than you can start and the other one is healthy and plays this
+  week and next. It is never the drop when your starting one has his bye next week, and neither is the only cover for a
+  QB or TE whose bye is next week.
+- **Inactives confirmed.** Between a questionable starter's inactives time (90 minutes before his kickoff) and his
+  kickoff, the tray re-reads his note at most every 15 minutes while you have it open. If the note says he is inactive or
+  ruled out, his row becomes a Do now fix ("Pickens inactive (Yahoo note, Today, 11:41 am)") with his backup. If it says
+  he is active, the row turns OK ("Active: keep him in") and stops being the next deadline. Otherwise it says when it last
+  checked. Only a sentence about him counts ("X will play with Y ruled out" is not him), "not ruled out" is not out, and
+  a note from before this week's Tuesday counts for nothing; "active" needs a note from today.
+- **Streaming kicker and defense.** Once your own kicker and defense have played this week, the tray reads next week's
+  projections (4 list pages, cached 30 minutes). If a free one projects at least 3 points more than yours, is not on bye
+  and is not already in a pending claim, an Option row says "Next week: stream Bills DEF (8.9 projected, easy matchup)
+  for Ravens (4.1). Waivers clear Nov 18." Within 5 weeks of your playoffs it also compares the two in your first playoff
+  week and says which to hold (2 more pages, cached 12 hours). Next week's matchup labels never change this week's.
+- **This week's odds and close calls.** The matchup page gives Yahoo's own win probability. Thursday to Monday, a line
+  under the verdict says "vs Rival Squad (6-3): Yahoo gives you 35%" (one page, cached 30 minutes; none when you are on
+  the matchup page). Below 40% or above 60%, close calls (a bench player within 10% of a starter on the score) become
+  Option rows phrased as questions: an underdog gets "Underdog: start X over Y? Higher best game lately", a favorite gets
+  "Favorite: start X over Y? Steadier week to week". They never change the verdict or Do now.
+- **Usage counts in the score.** For running backs, receivers and tight ends, the start score is 60% recent points and
+  40% usage: carries plus targets per game (same 4-week, last-2-weighted average), times what an opportunity is worth at
+  his position. That value comes from every weekly row the board has read once 200 opportunities are in, and from the
+  league's points per reception before that. The Add tab's "Scoring record" check uses the same blend, and its usage row
+  is shown for information only ("already in the score"), so usage counts once. When usage decides a swap, the swap says
+  "more work lately (9.0 vs 5.5 carries + targets per game)". Quarterbacks, kickers and defenses are unchanged.
+- **Does usage help?** On the Trends tab, a collapsed check predicts last week from the three weeks before it, once from
+  points alone and once with usage, using the weekly pages already saved in your browser (no requests). It reports the
+  average miss for each and how many player-weeks, keeps a running total across weeks, and says "Based on one week" until
+  it has three.
+- **Last week.** Every Do now move the tray shows is logged for that week, and stays logged after you make it. On
+  Tuesday and Wednesday the line under the verdict reads "Last week: you made 1 of 2 suggested moves. Best possible
+  lineup 118.4, yours 109.2." (last week's team page: one request, cached 3 hours because stat corrections can still
+  land). Details list each move, made or skipped, with both players' points; the best possible lineup is hindsight.
+- **Role news on your team page.** Checked in a real browser on 2026-11-16: every saved free-agent list was over 6 hours
+  old, because the daily snapshot saves them once, and the news check ran before the snapshot. Now the news is checked
+  again when the snapshot finishes. If there is news and no list under 6 hours old for that position, the tray reads that
+  position's free-agent list once (the page the snapshot reads, cached 30 minutes, at most 3 positions).
+- **At most three options in view.** The Optional group shows three rows and folds the rest into "N more options".
 
 ## Sharing with a friend
 

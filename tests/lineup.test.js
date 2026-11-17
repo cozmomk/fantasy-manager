@@ -1,7 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { launch, openBoard, waitForBoard, waitIdle, teamUrl, listUrl, api, CONTENT_JS } from './helpers.js';
-import { players, LEAGUE_ID, TEAM_ID } from './fixtures.js';
+import { players, LEAGUE_ID, TEAM_ID, MATCHUP, matchupHeader } from './fixtures.js';
 
 let browser;
 before(async () => { browser = await launch(); });
@@ -451,6 +451,161 @@ describe('game day: kickoff order, locked players, questionable starters', () =>
   });
 });
 
+describe('next week\'s kicker and defense', () => {
+  // your kicker and defense have played this week, so next week (6) is what matters for them
+  const setup = o => {
+    const by = id => players.find(p => p.id === id), keep = ['11', '12', '62'].map(id => ({ ...by(id) }));
+    by('11').gameLine = 'Final W 24-19 @ Mia'; by('12').gameLine = 'Final L 10-17 vs Pit';
+    Object.assign(by('62'), o);
+    return () => keep.forEach(k => { const p = by(k.id); Object.keys(p).forEach(x => { if (!(x in k)) delete p[x]; }); Object.assign(p, k); });
+  };
+  const optional = async () => {
+    const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID) });
+    await waitForBoard(page, { radar: false });
+    // the extras load after kicker and defense stats; wait for them
+    await page.waitForFunction(() => window.__FF_TEST__ && window.__FF_TEST__.extrasDone, null, { timeout: 30000 });
+    const t = await page.locator('.ff-board').innerText();
+    assert.ok(Array.isArray(await page.evaluate(() => window.__FF_TEST__.streams)), 'next week\'s lists were read and judged (not an error swallowed)');
+    await context.close();
+    return t;
+  };
+  it('a free defense projected 3+ points better next week is an Option row, with its matchup and claim timing', async () => {
+    const restore = setup({ proj: 9 });
+    try {
+      const t = await optional();
+      assert.match(t, /Next week: stream Seahawks DEF \(9\.0 projected(, (easy|average|tough) matchup)?\) for Ravens \(5\.0\)\. Free agent/);
+      assert.match(t, /^[\s\S]*?WEEK 5 START \/ SIT\nFIX YOUR LINEUP: your WR slot is empty\n/, 'a stream never changes the verdict (the fixture\'s empty WR slot is still the headline)');
+    } finally { restore(); }
+  });
+  it('a smaller edge, or a free defense on bye next week, is not suggested', async () => {
+    let restore = setup({ proj: 7.5 });
+    try { assert.doesNotMatch(await optional(), /Next week: stream/); } finally { restore(); }
+    restore = setup({ proj: 12, bye: 6 });
+    try { assert.doesNotMatch(await optional(), /Next week: stream Seahawks/); } finally { restore(); }
+  });
+});
+
+describe('this week\'s matchup and close calls', () => {
+  const SUN = Date.parse('2026-11-15T09:00:00');
+  it('reads the opponent, records and Yahoo\'s win probability from the matchup page header', async () => {
+    const { page, context } = await openBoard(browser, { pos: 'WR' });
+    await waitForBoard(page);
+    const read = pct => { MATCHUP.pct = pct; const html = '<html><body>' + matchupHeader() + '<table id="statTable1"><tr><td>x</td></tr></table></body></html>'; return page.evaluate(h => window.__FF_TEST__.api.parseMatchup(h), html); };
+    try {
+      assert.deepEqual(await read(62), { opp: 'Rival Squad', oppRec: '6-3', myRec: '4-5', pct: 62 });
+      assert.equal((await read(30)).pct, 30, 'an underdog reads his own side, not the favorite\'s');
+      assert.equal(await page.evaluate(() => window.__FF_TEST__.api.parseMatchup('<html><body><div>vs</div></body></html>')), null, 'no lineup table: no line');
+      // close calls: within 10% on the board's score, decided by ceiling (underdog) or steadiness (favorite)
+      const pl = [P('s', 'WR', 'WR', 10, { good: 2, m: { max: 14 } }), P('b', 'WR', 'BN', 9.6, { good: 3, m: { max: 22 } })];
+      const cc = pct => page.evaluate(([x, n]) => window.__FF_TEST__.api.closeCalls(x, 6, { moves: new Map() }, n).map(c => c.text), [pl, pct]);
+      assert.match((await cc(30))[0], /^Underdog: start b over s\? Higher best game lately \(22\.0 vs 14\.0\)/);
+      assert.match((await cc(75))[0], /^Favorite: start b over s\? Steadier week to week \(3 of 4 good games vs 2 of 4\)/);
+      assert.deepEqual(await cc(50), [], 'a coin flip suggests nothing');
+      const promised = await page.evaluate(([x]) => window.__FF_TEST__.api.closeCalls(x, 6, { moves: new Map(), rows: [{ backup: { id: 'b' } }] }, 30), [pl]);
+      assert.deepEqual(promised, [], 'a questionable starter\'s promised backup is never offered elsewhere');
+      pl[1].m.avg = 7; pl[1].m.form = 7;
+      assert.deepEqual(await cc(30), [], 'not a close call: the score decides');
+    } finally { MATCHUP.pct = 55; await context.close(); }
+  });
+  it('the team page shows the odds under the verdict on game days, not midweek', async () => {
+    const at = async now => {
+      const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID), now });
+      await waitForBoard(page, { radar: false });
+      await page.waitForFunction(() => window.__FF_TEST__ && window.__FF_TEST__.extrasDone, null, { timeout: 30000 });
+      const t = await page.locator('.ff-verdict').innerText();
+      await context.close();
+      return t;
+    };
+    assert.match(await at(SUN), /vs Rival Squad \(6-3\): Yahoo gives you 55%/);
+    assert.doesNotMatch(await at(Date.parse('2026-11-10T09:00:00')), /Yahoo gives you/, 'Tuesday: the odds line gives way to last week');
+  });
+});
+
+describe('how the advice did', () => {
+  const TUE = Date.parse('2026-11-10T09:00:00');   // week 5's Tuesday: week 4 is final
+  it('logs every move once shown, so a followed move still counts', async () => {
+    const { page, context } = await openBoard(browser, { url: teamUrl(TEAM_ID) });
+    await waitForBoard(page, { radar: false });
+    await page.waitForFunction(() => window.__FF_TEST__ && window.__FF_TEST__.extrasDone, null, { timeout: 30000 });
+    await page.waitForTimeout(300);
+    const log = await page.evaluate(() => JSON.parse(localStorage.getItem('ff:advice:111111:5') || 'null'));
+    assert.ok(log && Object.keys(log).length >= 1, 'the fixture lineup\'s fix is in the log');
+    const k = Object.keys(log)[0];
+    await page.evaluate(() => window.__FF_TEST__.api.rerender());
+    await page.waitForTimeout(300);
+    assert.deepEqual(await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('ff:advice:111111:5')))), Object.keys(log), 'redrawing never drops or duplicates a move');
+    assert.match(k, /^\d+>(\d+|empty)$/);
+    await context.close();
+  });
+  it('the best lineup takes single-position slots first, then the flex', async () => {
+    const { page, context } = await openBoard(browser, { pos: 'WR' });
+    await waitForBoard(page);
+    const best = await page.evaluate(() => window.__FF_TEST__.api.bestLineup([
+      { pos: 'RB', pts: 20 }, { pos: 'RB', pts: 15 }, { pos: 'RB', pts: 12 }, { pos: 'WR', pts: 9 }, { pos: 'WR', pts: 3 }, { pos: 'QB', pts: 18 }, { pos: 'TE', pts: NaN }],
+    { QB: 1, RB: 2, WR: 1, 'W/R/T': 1, BN: 5 }));
+    assert.equal(best, 18 + 20 + 15 + 9 + 12, 'the third RB goes to the flex, not the second WR; a player with no points fills nothing');
+    const overlap = await page.evaluate(() => window.__FF_TEST__.api.bestLineup([{ pos: 'WR', pts: 20 }, { pos: 'RB', pts: 19 }, { pos: 'TE', pts: 1 }], { 'W/R': 1, 'W/T': 1 }));
+    assert.equal(overlap, 39, 'overlapping flex slots: RB in W/R, WR in W/T');
+    await context.close();
+  });
+  it('on Tuesday the verdict says how last week went, with the moves in Details', async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await context.addInitScript(() => localStorage.setItem('ff:advice:111111:4', JSON.stringify({ '8>2': { start: { id: '8', name: 'Jonah Coleman' }, sit: { id: '2', name: 'Jacory Croskey-Merritt' }, slot: 'RB', t: 1 } })));
+    const { page, stats } = await openBoard(browser, { url: teamUrl(TEAM_ID), now: TUE, context });
+    await waitForBoard(page, { radar: false });
+    await page.waitForFunction(() => window.__FF_TEST__ && window.__FF_TEST__.extrasDone, null, { timeout: 30000 });
+    const t = await page.locator('.ff-verdict').innerText();
+    assert.match(t, /Last week: you made 0 of 1 suggested move\. Best possible lineup 37\.0, yours 37\.0\./);
+    assert.doesNotMatch(t, /Yahoo gives you/, 'one context line: last week replaces the odds midweek');
+    await page.locator('.ff-verdict .ff-more', { hasText: 'Details' }).click();
+    assert.match(await page.locator('.ff-verdict').innerText(), /Start Jonah Coleman over Jacory Croskey-Merritt: skipped \(Jonah Coleman 0\.0, Jacory Croskey-Merritt 5\.0; the move you skipped scored 5\.0 less\)/);
+    assert.equal(stats.yahoo.filter(r => /\/team\?&week=4/.test(r.url)).length, 1, 'one request for last week');
+    await context.close();
+  });
+});
+
+describe('inactives: the game-day word in his note', () => {
+  const NOW = Date.parse('2026-11-15T11:45:00');   // Sunday, after the inactives for the 1:00 pm games
+  let page, context;
+  before(async () => { ({ page, context } = await openBoard(browser, { pos: 'WR' })); await waitForBoard(page); });
+  after(async () => { await context.close(); });
+  const word = (text, date = 'Today, 11:41 am') => page.evaluate(([t, d, n]) => window.__FF_TEST__.api.gameWord({ text: t, date: d }, 'Braelon Allen', n), [text, date, NOW]);
+  it('reads inactive and active only when the sentence is about him, this week', async () => {
+    assert.equal(await word("Braelon Allen (ankle) is inactive for Sunday's game against the Bills."), 'inactive');
+    assert.equal(await word("Allen (ankle) is active for Sunday's game against the Bills."), 'active');
+    assert.equal(await word('Allen will play Sunday with Breece Hall ruled out.'), 'active', 'a teammate ruled out is not him');
+    assert.equal(await word('Allen has not been ruled out for Sunday.'), '');
+    assert.equal(await word('Breece Hall is inactive, so Allen should see more work.'), '');
+    assert.equal(await word("Allen's teammate Breece Hall is inactive for Sunday."), '', 'a possessive hands the sentence to someone else');
+    assert.equal(await word('Allen is unlikely to be ruled out Sunday.'), '', 'a guess is not a status');
+    assert.equal(await word("Allen could be out for Sunday's game."), '');
+    assert.equal(await word('Allen (Achilles) has been ruled out for Sunday.'), 'inactive', 'a capitalised body part is not another name');
+    assert.equal(await word("Allen (ankle) is inactive for Sunday's game.", 'Nov 8, 11:41 am'), '', 'last week\'s inactive note does not count');
+    assert.equal(await word('Allen (ankle) has been ruled out for Sunday.', 'Friday, 2:53 pm'), 'inactive', 'ruled out on Friday holds for Sunday');
+    assert.equal(await word('Allen will play Sunday.', 'Friday, 2:53 pm'), '', 'active needs a note from today');
+    assert.equal(new Date(await page.evaluate(n => window.__FF_TEST__.api.noteWhen('Friday, 2:53 pm', n), NOW)).toString().slice(0, 10), 'Fri Nov 13');
+  });
+  it('an inactive questionable starter becomes a fix; an active one an OK row; no word yet says when it was checked', async () => {
+    const allen = players.find(p => p.id === '3'), saved = { inj: allen.inj, note: allen.note };
+    const open = async note => {
+      allen.inj = 'Q'; allen.note = note;
+      const { page: pg, context: cx } = await openBoard(browser, { url: teamUrl(TEAM_ID), now: NOW });
+      await waitForBoard(pg, { radar: false });
+      await pg.waitForTimeout(1500);
+      const t = await pg.locator('.ff-board').innerText();
+      await cx.close();
+      return t;
+    };
+    try {
+      assert.match(await open("Allen (ankle) is inactive for Sunday's game against the Bills."), /Braelon Allen inactive \(Yahoo note, Today/);
+      const act = await open("Allen (ankle) is active for Sunday's game against the Bills.");
+      assert.match(act, /Braelon Allen \(RB, RB\) · Active[\s\S]*Active: keep him in/);
+      assert.doesNotMatch(act, /Next: decide Braelon Allen/, 'a settled player is not the next deadline');
+      assert.match(await open('Allen was limited in practice Wednesday with a sore ankle.'), /No word yet\. Checked [^.]+\. Check Yahoo\./);
+    } finally { Object.assign(allen, saved); }
+  });
+});
+
 describe('game day on the team page', () => {
   const NOW = Date.parse('2026-11-10T12:00:00');   // a Tuesday: every game this week is still ahead
   const tweak = () => {
@@ -586,6 +741,30 @@ describe('stash alert and other leagues', () => {
       assert.equal(await page.locator('.ff-opp').count(), 0);
       await context.close();
     } finally { caleb.ros = saved; }
+  });
+  // two kickers, no kicker stats loaded (a WR list): the bench kicker is the room, unless he covers next week's bye
+  const twoKickers = async (mcBye) => {
+    const caleb = players.find(p => p.id === '70'), fitz = players.find(p => p.id === '60'), mc = players.find(p => p.id === '11');
+    const saved = [caleb.ros, fitz.mine, fitz.slot, fitz.status, mc.bye];
+    caleb.ros = [90, 0]; Object.assign(fitz, { mine: true, slot: 'BN', status: undefined }); mc.bye = mcBye;
+    try {
+      const { page, context } = await openBoard(browser, { pos: 'WR' });
+      await waitForBoard(page);
+      await page.locator('.ff-tabbtn', { hasText: 'Stash' }).click();
+      await page.locator('.ff-opp > .ff-more').waitFor({ timeout: 30000 });
+      await page.locator('.ff-opp > .ff-more').click();
+      const t = await page.locator('.ff-opp').innerText();
+      await context.close();
+      return t;
+    } finally { [caleb.ros, fitz.mine, fitz.slot, fitz.status, mc.bye] = saved; }
+  };
+  it('a stash alert names the room for him: your second kicker when you start another healthy one', async () => {
+    assert.match(await twoKickers(9), /Room: drop Ryan Fitzgerald \(your second kicker\)/);
+  });
+  it('the bench kicker is never the drop when your starting kicker has his bye next week', async () => {
+    const t = await twoKickers(6);
+    assert.match(t, /Room: /);
+    assert.doesNotMatch(t, /Room: drop Ryan Fitzgerald/);
   });
   it('a player under 70% rostered is not announced', async () => {
     const { page, context } = await openBoard(browser, { pos: 'WR' });

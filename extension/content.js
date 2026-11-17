@@ -68,8 +68,11 @@
   const blockedUntil = () => { let v = 0; try { v = Number(localStorage.getItem('ff:blockedUntil') || 0); } catch (e) { /* ignore */ } return Math.max(v, blockedMem); };
   const tripBreaker = () => { blockedMem = Date.now() + PAUSE_MIN * 60000; try { localStorage.setItem('ff:blockedUntil', String(blockedMem)); } catch (e) { /* ignore */ } };
   const yfetch = (url, opts) => {
+    const guard = opts && opts.ffGuard;
+    if (guard) { opts = { ...opts }; delete opts.ffGuard; }
     const run = async () => {
       if (Date.now() < blockedUntil()) throw new Error('Yahoo asked us to slow down; paused until ' + new Date(blockedUntil()).toLocaleTimeString());
+      if (guard && !guard()) throw new Error('skipped: no longer needed');   // checked when its turn comes, not when it was queued
       await sleep(YAHOO_GAP_MS);
       try {   // two tabs share one pace: never closer together than the gap
         const wait = Number(localStorage.getItem('ff:lastReq') || 0) + YAHOO_GAP_MS - Date.now();
@@ -200,15 +203,61 @@
     return /month/i.test(m[3]) ? n * 4 : n;
   };
   const WEEK_OUT = /(ruled out|will not play|won't play|is inactive|out for (sunday|monday|thursday|saturday|this week|week \d+))/i;
+  // When a note was written. Yahoo writes "Today, 6:08 pm", a weekday ("Friday, 2:53 pm") for the last few days, or "Nov 1, 9:59 am".
+  const clockNow = () => (TEST && TEST.now) || Date.now();
+  const noteWhen = (date, now) => {
+    const m = /^(Today|Yesterday|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|[A-Z][a-z]{2} \d{1,2}),?\s+(\d{1,2}):(\d{2})\s*(am|pm)/i.exec(String(date || '').trim());
+    if (!m) return NaN;
+    const d = new Date(now), DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'], w = m[1].toLowerCase();
+    if (w === 'yesterday') d.setDate(d.getDate() - 1);
+    else if (DAYS.includes(w)) { do d.setDate(d.getDate() - 1); while (d.getDay() !== DAYS.indexOf(w)); }
+    else if (w !== 'today') { const x = new Date(m[1] + ' ' + d.getFullYear()); if (isNaN(x)) return NaN; d.setMonth(x.getMonth(), x.getDate()); if (d.getTime() > now + 864e5) d.setFullYear(d.getFullYear() - 1); }
+    d.setHours((+m[2] % 12) + (/pm/i.test(m[4]) ? 12 : 0), +m[3], 0, 0);
+    return d.getTime();
+  };
+  // the NFL week starts on the Tuesday before Thursday's game
+  const weekStart = now => { const t = new Date(now); t.setHours(0, 0, 0, 0); while (t.getDay() !== 2) t.setDate(t.getDate() - 1); return t.getTime(); };
+  const nameParts = name => (name || '').toLowerCase().replace(/[^a-z' ]/g, '').split(' ').filter(w => w.length >= 4 && !/^(jr|sr|iii)$/.test(w));
+  // A game-day status sentence counts only when it is about him: the sentence starts with his name, and nothing between his
+  // name and the status hands it to someone else ("X will play with Y ruled out"). "Not ruled out" is not out.
+  const ACTIVE_RE = /\b(is active|will play|will start|is available|good to go|(is )?expected to (play|start|suit up|be active))\b/i;
+  const aboutHim = (lead, name, re) => {
+    const parts = nameParts(name);
+    if (!parts.length) return false;
+    return sentencesOf(lead).some(sent => {
+      const low = sent.toLowerCase(), at = Math.min(...parts.map(w => { const i = low.indexOf(w); return i < 0 || i > 40 ? Infinity : i; }));
+      if (!isFinite(at)) return false;
+      if (at > 3) return false;                                  // his name opens the sentence: he is its subject
+      const m = re.exec(sent.slice(at));
+      if (!m) return false;
+      let between = sent.slice(at, at + m.index);
+      parts.forEach(w => { between = between.replace(new RegExp(w, 'ig'), ''); });
+      between = between.replace(/\([^)]*\)/g, '');            // "(ankle)", "(Achilles)"
+      if (/'s\b/.test(between) || /\b[A-Z][a-z]+/.test(between.replace(/^\s*(Jr\.|Sr\.|II|III)/, ''))) return false;   // "Allen's teammate Breece Hall is ...
+      if (/\b(could|may|might|unlikely|likely|hopes?|hoping|avoid|risk|chance|trending|expected to be|in danger)\b/i.test(between)) return false;   // a guess is not a status
+      return !/\b(with|while|without|as|after|but|and|since)\b|,/.test(between) && !/\b(not|n't|never)\s+(been\s+|be\s+)?$/i.test(between);
+    });
+  };
+  // this week's word on game day from his note: 'inactive', 'active' or ''
+  const gameWord = (n, name, now) => {
+    if (!n || !n.text) return '';
+    const when = isFinite(n.at) ? n.at : noteWhen(n.date, now);
+    if (when < weekStart(now)) return '';   // a note from last week says nothing about this week (an undated one still counts)
+    const lead = n.text.split(/Advice:/)[0];
+    if (aboutHim(lead, name, WEEK_OUT)) return 'inactive';
+    if (aboutHim(lead, name, ACTIVE_RE) && !isNaN(when) && new Date(when).toDateString() === new Date(now).toDateString()) return 'active';
+    return '';
+  };
   const classify = (n, name) => {
     if (!n) return '';
     const lead = n.text.split(/Advice:/)[0];
-    const parts = (name || '').toLowerCase().replace(/[^a-z' ]/g, '').split(' ').filter(w => w.length >= 4 && !/^(jr|sr|iii)$/.test(w));
+    const parts = nameParts(name);
     if (parts.length && !parts.some(w => lead.toLowerCase().includes(w))) return '';
     const plays = PLAYS.test(lead), weeks = absenceWeeks(lead);
     if (!plays && (HARD_OUT.test(lead) || weeks >= 4)) return 'long';
     if (!plays && weeks > 0) return 'week';
-    if (WEEK_OUT.test(lead)) return 'week';
+    // "ruled out" / "inactive" is about one game: it has to be this week's, and about him
+    if (WEEK_OUT.test(lead) && (!parts.length || gameWord(n, name, clockNow()) === 'inactive')) return 'week';
     return '';
   };
 
@@ -253,7 +302,7 @@
   // than ownership and status. A list of YOUR players is keyed by who is on your roster, so a new add is never missing from it.
   let curWeek = 0, lastNet = true;
   const ttlFor = stat => { const m = /^S_W_(\d+)$/.exec(stat); if (!m || !curWeek) return CACHE_MIN; const n = +m[1]; return n <= curWeek - 2 ? 720 : (n === curWeek - 1 ? 180 : CACHE_MIN); };
-  const fetchPage = async (stat, page, over, sig) => {
+  const fetchPage = async (stat, page, over, sig, ttlMin) => {
     const p = new URLSearchParams(location.search);
     p.delete('search'); p.set('sdir', '1');     // never inherit a name search or a reversed sort from the page's own address
     p.set('stat1', stat);
@@ -261,7 +310,7 @@
     if (page) p.set('count', String(25 * page)); else p.delete('count');
     const url = '/f1/' + leagueId + '/players?' + p.toString();
     const ckey = sig ? url + '|' + sig : url;
-    const hit = cacheGet(ckey, ttlFor(stat));
+    const hit = cacheGet(ckey, ttlMin || ttlFor(stat));
     if (hit !== undefined) { lastNet = false; return hit; }
     lastNet = true;
     const res = await yfetch(url, { credentials: 'include' });
@@ -292,13 +341,13 @@
   // A healthy player's note rarely changes, so it is reused for 3 hours; a flagged (injured/questionable) player's note is kept 30 minutes.
   const NOTE_QUIET_MIN = 180;
   const isFlagged = p => !!(p && (p.injTag || (p.sl && p.sl.inj)));
-  const fetchNote = async (id, fresh = true, withInfo = false) => {
+  const fetchNote = async (id, fresh = true, withInfo = false, ttlMin, guard) => {
     const ck = 'note:' + leagueId + ':' + id;
-    const hit = cacheGet(ck, fresh ? CACHE_MIN : NOTE_QUIET_MIN);
+    const hit = cacheGet(ck, ttlMin || (fresh ? CACHE_MIN : NOTE_QUIET_MIN));
     if (hit !== undefined && (!withInfo || cacheGet('pinfo:' + leagueId + ':' + id, CACHE_MIN) !== undefined)) return hit;
     let d = null, parsed = false;
     try {
-      const res = await yfetch('/f1/' + leagueId + '/playernote?pid=' + encodeURIComponent(id), { credentials: 'include' });
+      const res = await yfetch('/f1/' + leagueId + '/playernote?pid=' + encodeURIComponent(id), { credentials: 'include', ffGuard: guard });
       if (res.ok) {
         const j = JSON.parse(await res.text());
         parsed = true;
@@ -311,10 +360,10 @@
         if (item) {
           const date = txt(item.querySelector('.date'));
           const text = txt(item).replace(/^(New )?Player Note\s*/, '').replace(date, '').replace(/^(New )?Player Note\s*/, '').trim();
-          d = { date, text };
+          d = { date, text, at: noteWhen(date, clockNow()) };   // "Today" means the day it was read, not the day it is shown
         }
       }
-    } catch (e) { if (/slow down|pausing/.test(String(e && e.message))) throw e; /* otherwise: no note available this time */ }
+    } catch (e) { if (/slow down|pausing|skipped/.test(String(e && e.message))) throw e; /* otherwise: no note available this time */ }
     if (parsed) cacheSet(ck, d);       // a failed request is not "no note": try again next time
     return d;
   };
@@ -388,6 +437,39 @@
     return (miss.length >= ws.length ? 'no games in the last 2' : 'last game ' + f1(m.form)) + ' (' + why + ')';
   };
   const usageText = m => (isNaN(m.oppAvg) ? '' : 'usage ' + f1(m.oppAvg) + '/game' + (isNaN(m.oppForm) ? '' : ', last 2 ' + f1(m.oppForm)));
+  // Points per opportunity (carries + targets) at each position, from the weekly list pages saved in this browser for the
+  // last four weeks (each player-week once). Worked out once per page load, so every score on the page uses the same
+  // value. Under 200 opportunities at a position there is no usage term: the score is points only.
+  const PPO_MIN = 200;
+  let ppoMemo = null;
+  const weeklyRows = weeksWanted => {
+    const rows = {};
+    let keys = [];
+    try { keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX + '/f1/' + leagueId + '/players?')); } catch (e) { return rows; }
+    for (const k of keys) {
+      const m = /[?&]stat1=S_W_(\d+)(&|\||$)/.exec(k);
+      if (!m || !weeksWanted.includes(+m[1])) continue;
+      let h; try { h = JSON.parse(localStorage.getItem(k)); } catch (e) { continue; }
+      Object.entries((h && h.d) || {}).forEach(([id, o]) => {
+        if (!o || !USAGE_POS.test(o._pos || '')) return;
+        const gp = o['GP*'] ?? o['GP'], pts = num(o['Fan Pts']), a = num(o['Att*'] ?? o['Att']), t = num(o['Tgt*'] ?? o['Tgt']);
+        if (!(num(gp) > 0) || isNaN(pts) || (isNaN(a) && isNaN(t))) return;
+        (rows[id] = rows[id] || { pos: o._pos, w: {} }).w[m[1]] = { pts, opp: (isNaN(a) ? 0 : a) + (isNaN(t) ? 0 : t) };
+      });
+    }
+    return rows;
+  };
+  const ppoFrom = (rows, weeksUsed) => {
+    const sum = {};
+    Object.values(rows).forEach(r => weeksUsed.forEach(w => { const x = r.w[w]; if (!x) return; const a = sum[r.pos] = sum[r.pos] || { pts: 0, opp: 0 }; a.pts += x.pts; a.opp += x.opp; }));
+    return Object.fromEntries(Object.entries(sum).map(([pos, a]) => [pos, a.opp >= PPO_MIN ? a.pts / a.opp : NaN]));
+  };
+  const ppoOf = pos => {
+    const wk = curWeek || (board && board.week);
+    if (!wk) return NaN;
+    if (!ppoMemo || ppoMemo.week !== wk) { const ws = weekRange(wk); ppoMemo = { week: wk, d: ppoFrom(weeklyRows(ws), ws) }; }
+    return ppoMemo.d[pos] ?? NaN;
+  };
   const metrics = (id, pos, data, radarMode) => {
     const weeks = data.weekNums.map(w => {
       const row = data.weekly[w][id];
@@ -434,7 +516,18 @@
   const SUPERFLEX = 'Q/W/R/T';
   const FLEX = { [SUPERFLEX]: ['QB', 'RB', 'WR', 'TE'], 'W/R/T': ['RB', 'WR', 'TE'], 'W/R': ['RB', 'WR'], 'W/T': ['WR', 'TE'], 'R/T': ['RB', 'TE'] };
   const slotFits = (p, slot) => slot === p.pos || (FLEX[slot] || []).includes(p.pos);
-  const startScore = p => { const a = p.m.avg, f = p.m.form; return isNaN(a) ? NaN : (isNaN(f) ? a : 0.6 * a + 0.4 * f); };
+  // Recent points (last 4 weeks, weighted to the last 2), blended 60/40 with the points his usage is worth at his position:
+  // carries and targets predict the next weeks better than touchdowns do.
+  const pointsScore = p => { const a = p.m.avg, f = p.m.form; return isNaN(a) ? NaN : (isNaN(f) ? a : 0.6 * a + 0.4 * f); };
+  const usageScore = p => {
+    if (!USAGE_POS.test(p.pos) || !p.m || isNaN(p.m.oppAvg)) return NaN;
+    const u = isNaN(p.m.oppForm) ? p.m.oppAvg : 0.6 * p.m.oppAvg + 0.4 * p.m.oppForm;
+    return u * ppoOf(p.pos);
+  };
+  const USE_W = 0.4;
+  const startScore = p => { const pts = pointsScore(p), u = usageScore(p); return isNaN(pts) ? NaN : isNaN(u) ? pts : (1 - USE_W) * pts + USE_W * u; };
+  // usage decided it: on points alone the other player was ahead
+  const usageDecided = (b, s) => !isNaN(usageScore(b)) && !isNaN(usageScore(s)) && pointsScore(b) <= pointsScore(s) * 1.15 && usageScore(b) > usageScore(s);
   // kickers and defenses swing with the matchup, so their start/sit goes by Yahoo's projection for this week when both have one
   const PROJ_POS = /^(K|DEF)$/, PROJ_EDGE = 1.5;
   const byProjection = (b, s) => PROJ_POS.test(b.pos) && !isNaN(b.proj) && !isNaN(s.proj);
@@ -491,7 +584,7 @@
       if (canPlay(s, week) || s.locked) continue;   // a locked starter cannot be moved; the lineup table labels him
       const sub = best(bench, s.slot);
       if (sub) used.add(sub.id);
-      fixes.push({ slot: s.slot, sit: s, start: sub || null, why: AVAIL_TEXT[availability(s, week)] });
+      fixes.push({ slot: s.slot, sit: s, start: sub || null, why: s.injTag === 'Q' && gameWord(s.note, s.name, clockNow()) === 'inactive' ? 'inactive (Yahoo note, ' + s.note.date + ')' : AVAIL_TEXT[availability(s, week)] });
     }
     for (const pos of emptySlots(players, slots)) {
       const sub = best(bench, pos);
@@ -552,8 +645,10 @@
       const decideBy = q.kick ? Math.min(q.kick.key, backup && backup.kick ? backup.kick.key : Infinity) : NaN;
       const knowAt = q.kick ? q.kick.key - 90 : NaN;
       rows.push({ q, slot, backup, decideBy, knowAt, blind: !!(backup && backup.kick && q.kick && backup.kick.key < knowAt),
-        passed: !isNaN(decideBy) && now > kickDate(decideBy, now), practice: practiceLine(q.note) });
+        passed: !isNaN(decideBy) && now > kickDate(decideBy, now), practice: practiceLine(q.note), word: gameWord(q.note, q.name, now),
+        known: !isNaN(knowAt) && now >= kickDate(knowAt, now) });
     });
+    rows.sort((a, b) => (a.word === 'active' ? 1 : 0) - (b.word === 'active' ? 1 : 0));   // settled ones go last
     const benched = players.filter(p => !/^(BN|IR)$/.test(p.slot) && !p.locked && availability(p, week) === 'q' && !starting(p));
     const moves = new Map(players.filter(p => slotOf.get(p.id) !== p.slot).map(p => [p.id, slotOf.get(p.id)]));
     const starters = players.filter(starting);
@@ -670,11 +765,13 @@
   // A defense's matchup: Yahoo's "Pts vs." on the projected-week list is the points it is projected to allow this week,
   // that is, what its opponent is projected to score. Thirds of this week's free defenses set easy / average / tough.
   let oppCut = null;
-  const setOppCut = proj => {
+  // thirds of one projected week's free defenses; each week keeps its own, so next week's never relabels this week's
+  const oppCutOf = proj => {
     const v = Object.values(proj).map(o => num(o['Pts vs.*'])).filter(x => !isNaN(x)).sort((a, b) => a - b);
-    if (v.length >= 6) oppCut = [v[Math.floor(v.length / 3)], v[Math.floor((2 * v.length) / 3)]];
+    return v.length >= 6 ? [v[Math.floor(v.length / 3)], v[Math.floor((2 * v.length) / 3)]] : null;
   };
-  const matchupWord = v => (!oppCut || isNaN(v) ? '' : v <= oppCut[0] ? 'easy' : v >= oppCut[1] ? 'tough' : 'average');
+  const setOppCut = proj => { const c = oppCutOf(proj); if (c) oppCut = c; };
+  const matchupWord = (v, cut = oppCut) => (!cut || isNaN(v) ? '' : v <= cut[0] ? 'easy' : v >= cut[1] ? 'tough' : 'average');
   const matchupText = p => (isNaN(p.oppPts) ? 'no data' : 'opponent projected to score ' + f1(p.oppPts) + (matchupWord(p.oppPts) ? ' (' + matchupWord(p.oppPts) + ' matchup)' : ''));
   const wireCand = (id, o, pos, data, proj, SL) => {
     const team = o._team || '';
@@ -1070,7 +1167,13 @@
   // ===================================================================================================
   const f1 = v => (isNaN(v) ? '-' : v.toFixed(1));
   const signed = d => (d > 0 ? '+' : '') + d;
-  const ratio = p => (isNaN(p.m.avg) ? 0 : p.m.avg / p.m.thr);
+  // average per game against the position's good-game mark, with usage blended in for RB, WR and TE (counted once: the
+  // comparison's own usage row is shown for information only)
+  const ratio = p => {
+    if (isNaN(p.m.avg)) return 0;
+    const u = USAGE_POS.test(p.pos) && !isNaN(p.m.oppAvg) ? p.m.oppAvg * ppoOf(p.pos) : NaN;
+    return (isNaN(u) ? p.m.avg : (1 - USE_W) * p.m.avg + USE_W * u) / p.m.thr;
+  };
   const depthRank = p => { const d = parseInt((p.m.depth.match(/\d+/) || [])[0], 10); return isNaN(d) ? NaN : d; };
   const momentumScore = p => {
     const m = p.m;
@@ -1106,7 +1209,7 @@
       const comparable = c.pos === r.pos && !isNaN(c.m.oppAvg) && !isNaN(r.m.oppAvg);
       const ue = !comparable ? 0 : (c.m.oppAvg >= r.m.oppAvg * 1.2 && c.m.oppAvg - r.m.oppAvg >= 2 ? 1 : (r.m.oppAvg >= c.m.oppAvg * 1.2 && r.m.oppAvg - c.m.oppAvg >= 2 ? -1 : 0));
       const ul = p => (usageText(p.m) || 'usage n/a') + (comparable || isNaN(p.m.oppAvg) ? '' : ' (not comparable across positions)');
-      add('Usage: carries + targets', 3, ue, [ul(c)], [ul(r)]);
+      add('Usage: carries + targets (already in the score)', 0, ue, [ul(c)], [ul(r)]);
     }
     // 3. momentum
     const ms = momentumScore(c) - momentumScore(r);
@@ -1264,6 +1367,7 @@
   .ff-news .hd{font-weight:800;font-size:13px;margin-bottom:3px;color:#0d4a14}
   .ff-news .item{font-size:12.5px;margin:3px 0}
   .ff-news .nt{display:block;color:#555;font-size:11.5px}
+  .ff-news .room{font-size:12.5px;margin:4px 0 2px;font-weight:600;color:#3d2a6b}
   .ff-suggest{border:2px solid #6001d2;border-radius:10px;padding:8px 10px;margin:6px 0 10px;background:#faf6ff}
   .ff-suggest .hd{font-weight:800;font-size:14px;margin-bottom:4px}
   .ff-suggest .need{margin:4px 0;font-size:12.5px}
@@ -1309,12 +1413,14 @@
   .ff-gh{font-size:11.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--ff-muted);margin:12px 0 4px}
   .ff-row{padding:6px 0;border-top:1px solid #e6e6e6;font-size:12.5px}
   .ff-lbl{display:inline-block;font-size:10.5px;font-weight:800;border-radius:6px;padding:0 6px;margin-right:6px}
-  .ff-lbl.risk{background:var(--ff-risk-bg);color:var(--ff-risk)}.ff-lbl.option{background:var(--ff-option-bg);color:var(--ff-option)}.ff-lbl.must{background:var(--ff-must-bg);color:var(--ff-must)}
+  .ff-lbl.risk{background:var(--ff-risk-bg);color:var(--ff-risk)}.ff-lbl.option{background:var(--ff-option-bg);color:var(--ff-option)}.ff-lbl.must{background:var(--ff-must-bg);color:var(--ff-must)}.ff-lbl.ok{background:var(--ff-ok-bg);color:var(--ff-ok)}
   .ff-row .l1{font-weight:700}
   .ff-row .l2{font-weight:700;margin-top:2px;color:#111}
   .ff-row .l3{color:var(--ff-muted);font-size:12px;margin-top:2px}
   .ff-row.passed .l1,.ff-row.passed .l2{color:var(--ff-muted)}
   .ff-more{font:600 12px system-ui;border:0;background:none;color:var(--ff-option);text-decoration:underline;cursor:pointer;padding:2px 0;min-height:24px}
+  .ff-optmore:not(.open),.ff-usebt:not(.open){display:none}
+  .ff-verdict .ctx{color:var(--ff-muted);font-size:12px;margin-top:3px}
   .ff-row .ff-more{display:none}
   #ff-tray:not(.wide) .ff-row .ff-more{display:inline-block}
   #ff-tray:not(.wide) .ff-row .l3{display:none}
@@ -1413,12 +1519,24 @@
     return players.filter(x => x.id !== p.id && x.pos === p.pos && x.slot !== 'IR' && x.m && availability(x, week) === 'ok' && x.bye < week &&
       !isNaN(startScore(x)) && !(startScore(x) < mine)).sort((a, b) => startScore(b) - startScore(a))[0] || null;
   };
+  // A second kicker or defense needs no stats to be spare: you roster more of them than you can start, and the other one is
+  // healthy and plays this week and next. Kicker and defense stats load only when you look at them, so this works everywhere.
+  const kdOthers = (players, p) => players.filter(x => x.id !== p.id && x.pos === p.pos && x.slot !== 'IR');
+  const spareKD = (players, week, p) => {
+    if (!/^(K|DEF)$/.test(p.pos) || p.slot !== 'BN') return false;
+    const all = players.filter(x => x.pos === p.pos && x.slot !== 'IR');
+    if (all.length <= (SLOTS[p.pos] || 0)) return false;
+    return kdOthers(players, p).some(x => x.slot !== 'BN' && x.out === 0 && x.injTag !== 'Q' && x.bye !== week && x.bye !== week + 1);
+  };
+  // the only cover for a QB/TE/K/DEF starter whose bye is next week: never the drop, whatever else is true
+  const coversNextBye = (players, week, p) => p.slot === 'BN' && /^(QB|TE|K|DEF)$/.test(p.pos) && (SLOTS[p.pos] || 0) === 1 &&
+    players.some(s => s.slot === p.pos && s.bye === week + 1) && !players.some(q => q.id !== p.id && q.slot === 'BN' && q.pos === p.pos);
   const neededQB = (players, p) => p.pos === 'QB' && !!SLOTS[SUPERFLEX] && players.filter(q => q.pos === 'QB' && q.slot !== 'IR' && q.out === 0).length <= 2;
   const suggestReplace = (roster, skip) => {
-    const bench = roster.players.filter(p => p.slot === 'BN' && !(skip && skip.has(p.id)) && !(p.out === 2 && roster.irFree && !seasonDone(p, roster.week)) && !coversBye(roster.players, roster.week, p) && !neededQB(roster.players, p));
+    const bench = roster.players.filter(p => p.slot === 'BN' && !(skip && skip.has(p.id)) && !(p.out === 2 && roster.irFree && !seasonDone(p, roster.week)) && !coversBye(roster.players, roster.week, p) && !coversNextBye(roster.players, roster.week, p) && !neededQB(roster.players, p));
     const done = bench.find(p => seasonDone(p, roster.week));
     if (done) return done;
-    const spare = bench.filter(p => surplusStarter(roster.players, roster.week, p)).sort(byRecord)[0];
+    const spare = bench.filter(p => surplusStarter(roster.players, roster.week, p) || spareKD(roster.players, roster.week, p)).sort(byRecord)[0];
     const unproven = bench.filter(p => !proven(p)).sort(byRecord)[0];
     return spare || unproven || [...bench].sort(byRecord)[0] || null;
   };
@@ -1482,6 +1600,18 @@
       groups.push({ slot: '', why: vs ? 'he clearly beats ' + vs.name + ' on the board\'s rules' : r.kind === 'ir' ? 'the room your IR move makes' : 'an open bench spot', room: r, picks });
     }
     return groups;
+  };
+  // Where an add would go, in the claim plan's order: an open bench spot, the room an IR move makes, then a drop
+  const roomText = R => {
+    if (!R) return '';
+    if (R.benchFree > 0) return 'Room: open bench spot';
+    const ir = irOption(R);
+    if (ir) return 'Room: move ' + ir.name + ' to IR first';
+    const d = suggestReplace(R);
+    if (!d) return 'Room: no safe drop right now';
+    const why = seasonDone(d, R.week) ? 'out for the season' : (spareKD(R.players, R.week, d) || surplusStarter(R.players, R.week, d)) ?
+      'your second ' + { K: 'kicker', DEF: 'defense', QB: 'quarterback', TE: 'tight end' }[d.pos] : !proven(d) ? 'few good games lately' : 'your weakest bench player by recent scoring';
+    return 'Room: drop ' + d.name + ' (' + why + ')';
   };
   const clearText = status => (/^W \(/.test(status || '') ? 'waivers clear ' + status.slice(3, -1) : status === 'FA' ? 'free agent: add any time' : status || '');
   const doneText = (p, week) => p.name + ' is ' + (parseReturn(p.note, week).kind === 'season' ? 'out for the season' : 'not back before your playoffs end') + ' (his note, ' + p.note.date + '): drop him' + (p.slot === 'IR' ? ' to free your IR slot for a player who will return.' : ' rather than use an IR slot on him.');
@@ -1784,7 +1914,7 @@
     else if (G.tips.length) { kind = 'yes'; headline = 'Your week ' + week + ' lineup is right · ' + G.tips.length + ' optional reorder' + (G.tips.length > 1 ? 's' : ''); sub = 'Nobody in your lineup is out or on bye, and no bench player is clearly better than a starter.'; }
     else { kind = 'yes'; headline = 'Your week ' + week + ' lineup looks right'; sub = 'Nobody in your lineup is out or on bye, and no bench player is clearly better than a starter.'; }
     // the one deadline that matters: the earliest questionable decision still open
-    const next = G.rows.filter(r => !r.passed && isFinite(r.decideBy)).sort((x, y) => x.decideBy - y.decideBy)[0];
+    const next = G.rows.filter(r => !r.passed && isFinite(r.decideBy) && r.word !== 'active').sort((x, y) => x.decideBy - y.decideBy)[0];
     const nextLine = guarded ? '' : next ? 'Next: decide ' + next.q.name + ' by ' + kickText(next.decideBy) : G.allLocked ? 'All your games have started' : 'Nothing to decide';
     return { L, G, guarded, kind, headline, sub, nextLine };
   };
@@ -1797,6 +1927,16 @@
     b.appendChild(el('h3', null, 'Week ' + week + ' start / sit'));
     const box = el('div', 'ff-verdict ' + kind); box.append(el('div', 'hd', headline), el('div', null, sub));
     if (nextLine) box.appendChild(el('div', 'nl', nextLine + ' · as of ' + clockText(now)));
+    const ex = board.extras || {}, midweek = [2, 3].includes(new Date(now).getDay());
+    // one muted context line at most: last week's results on Tuesday and Wednesday, this week's odds the rest of the week
+    const ctx = midweek && ex.lastLine ? ex.lastLine : !midweek && ex.matchup && !guarded ? 'vs ' + ex.matchup.opp + ' (' + ex.matchup.oppRec + '): Yahoo gives you ' + ex.matchup.pct + '%' : '';
+    if (ctx) box.appendChild(el('div', 'ctx', ctx));
+    if (ctx && ctx === ex.lastLine && ex.lastDetails) {
+      const d = el('div', 'ff-usebt' + (isOpen('lastweek') ? ' open' : ''));
+      ex.lastDetails.forEach(t => d.appendChild(el('div', 'ctx', t)));
+      box.append(expander('lastweek', 'Details', d), d);
+    }
+    if (!guarded && R.kd && !running) logAdvice(L, week).catch(() => {});   // only once the whole board is in: no half-loaded advice
     b.appendChild(box);
     const named = new Set();   // players the advice names: they get a kickoff pill in the table at narrow widths
     // ---- Do now: fixes and swaps --------------------------------------------------------------------------------
@@ -1816,6 +1956,8 @@
           const vr = p => (!p ? '-' : isNaN(gap(p)) ? 'n/a' : 'Yahoo ' + f1(p.proj) + ' vs his recent average ' + f1(p.m.avg) + ' (' + (gap(p) > 0 ? '+' : '') + Math.round(gap(p) * 100) + '%)' + (Math.abs(gap(p)) < 0.4 ? ': in line' : ''));
           row('Yahoo vs record (advice follows recent scoring)', vr(x.start), vr(x.sit));
         }
+        if (!x.why && x.start && x.sit && usageDecided(x.start, x.sit))   // the swap is there because of his work, not his points: say so
+          row('Usage', 'more work lately (' + f1(x.start.m.oppAvg) + ' vs ' + f1(x.sit.m.oppAvg) + ' carries + targets per game)', 'counts in the score');
         row('Status', x.start ? healthText(x.start) + (x.start.bye === week ? '; on bye' : '') : '-', x.sit ? (x.why ? x.why : healthText(x.sit)) : 'empty: scores zero until filled');
         g.appendChild(t);
         if (!x.start) g.appendChild(findFor(x.sit ? x.sit.pos : x.slot, 'Find a free-agent ' + (x.sit ? x.sit.pos : x.slot)));
@@ -1827,18 +1969,21 @@
       const g = ffGroup('Before kickoff', 'soon');
       G.rows.forEach(r => {
         named.add(r.q.id); if (r.backup) named.add(r.backup.id);
-        const x = ffRow('Risk', 'risk'), id = 'q:' + r.q.id;
+        const active = r.word === 'active';
+        const x = active ? ffRow('OK', 'ok') : ffRow('Risk', 'risk'), id = 'q:' + r.q.id;
         if (r.passed) x.classList.add('passed');
         if (isOpen(id)) x.classList.add('open');
-        x.appendChild(el('span', 'l1', r.q.name + ' (' + r.q.pos + ', ' + r.slot + ') · Questionable'));
-        const l2 = r.passed ? 'Deadline passed: check Yahoo'
+        x.appendChild(el('span', 'l1', r.q.name + ' (' + r.q.pos + ', ' + r.slot + ') · ' + (active ? 'Active' : 'Questionable')));
+        const l2 = active ? 'Active: keep him in' : r.passed ? 'Deadline passed: check Yahoo'
           : !r.backup ? 'If out, nobody left on your bench can cover him'
             : r.blind ? r.backup.name + ' plays first: decide before you know · by ' + kickText(r.decideBy)
               : 'If out, start ' + r.backup.name + ' · decide by ' + kickText(r.decideBy);
         x.appendChild(el('div', 'l2', l2));
         const bits = [r.practice ? 'Practice: ' + r.practice + (r.q.note && r.q.note.date ? ' (note, ' + r.q.note.date + ')' : '') : 'No practice report in his latest note'];
         if (yahooSits(r.q)) bits.unshift('Yahoo projects ' + f1(r.q.proj) + ': it expects him to sit');
-        if (!isNaN(r.knowAt)) bits.push("you'll know at " + kickText(r.knowAt) + ' (inactives)');
+        if (active) bits.unshift('Yahoo note, ' + r.q.note.date);
+        else if (r.known && noteChecked[r.q.id]) bits.push('No word yet. Checked ' + new Date(noteChecked[r.q.id]).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '. Check Yahoo.');
+        else if (!isNaN(r.knowAt)) bits.push("you'll know at " + kickText(r.knowAt) + ' (inactives)');
         if (r.backup && r.backup.injTag === 'Q') bits.push('Backup ' + r.backup.name + ' is also questionable');
         if (r.backup && r.backup.kick) bits.push(r.backup.name + ' kicks off ' + kickText(r.backup.kick.key));
         x.appendChild(el('div', 'l3', bits.join(' · ')));
@@ -1848,6 +1993,7 @@
       });
       G.benched.forEach(p => g.appendChild(el('div', 'ff-hint', p.name + ' is questionable; a move above benches him.')));
       b.appendChild(g);
+      checkInactives(G.rows, now);
     }
     // ---- Optional: flex order, IR, open roster spot, season-done notes ---------------------------------------
     const opt = ffGroup('Optional', 'opt');
@@ -1884,6 +2030,29 @@
       opt.appendChild(open);
     }
     if (!guarded) R.players.filter(p => seasonDone(p, week)).forEach(p => { const x = ffRow('Option', 'option'); x.append(doneText(p, week)); opt.appendChild(x); });
+    // close calls when Yahoo has you as a clear favorite or underdog: questions, not fixes
+    if (!guarded && ex.matchup && !midweek) closeCalls(R.players, week, G, ex.matchup.pct).forEach(c => {
+      named.add(c.s.id); named.add(c.b.id);
+      const x = ffRow('Option', 'option'); x.appendChild(el('span', 'l1', c.text)); opt.appendChild(x);
+    });
+    // next week's kicker or defense, last: it changes nothing about this week's lineup
+    if (!guarded) ((board.extras && board.extras.streams) || []).forEach(st => {
+      const x = ffRow('Option', 'option'), what = st.pos === 'DEF' ? 'DEF' : 'K';
+      x.appendChild(el('span', 'l1', 'Next week: stream ' + st.best.name + ' ' + what + ' (' + f1(st.best.proj) + ' projected' + (st.word ? ', ' + st.word + ' matchup' : '') + ') for ' + st.mine.name + ' (' + f1(st.myProj) + ').' +
+        (clearText(st.best.status) ? ' ' + clearText(st.best.status).replace(/^./, c => c.toUpperCase()) + '.' : '')));
+      if (st.playoff) {
+        const hold = st.playoff.best > st.playoff.mine ? st.best.name : st.mine.name;
+        x.appendChild(el('div', 'l3', 'Week ' + st.playoff.week + ' (playoffs): ' + st.best.name + ' projects ' + f1(st.playoff.best) + ', ' + st.mine.name + ' ' + f1(st.playoff.mine) + '. Hold ' + hold + '.'));
+      }
+      opt.appendChild(x);
+    });
+    // at most three options in view; the rest one tap away
+    const optRows = [...opt.children].slice(1);
+    if (optRows.length > 3) {
+      const more = el('div', 'ff-optmore' + (isOpen('opts') ? ' open' : ''));
+      optRows.slice(3).forEach(r => more.appendChild(r));
+      opt.append(expander('opts', (optRows.length - 3) + ' more option' + (optRows.length > 4 ? 's' : ''), more), more);
+    }
     if (opt.children.length > 1) b.appendChild(opt);
     if (unknownSlots.length) b.appendChild(el('div', 'ff-hint', 'This league also has ' + unknownSlots.join(', ') + ' slots, which this tool does not read, so check those yourself.'));
     // ---- Your lineup ------------------------------------------------------------------------------------------
@@ -1922,7 +2091,7 @@
     // ---- How this is judged (collapsed) ------------------------------------------------------------------------
     const judged = el('div', 'ff-judged' + (isOpen('judged') ? ' open' : ''));
     const jb = expander('judged', 'How this is judged', judged); jb.classList.add('ff-judged-btn');
-    judged.appendChild(el('div', 'ff-hint body', 'Judged on consistent scoring (last 4 weeks, weighted to the last 2), not Yahoo\'s one-week projections. Matchups are not considered. A bench player must beat a starter by 15% and 2 points, and a proven starter needs more. Kickers and defenses are the exception: they swing with the matchup, so they go by Yahoo\'s projection for this week (a ' + PROJ_EDGE + '-point edge to swap). Players whose game has started are never moved. Times are as Yahoo shows them, in your time zone.'));
+    judged.appendChild(el('div', 'ff-hint body', 'Judged on consistent scoring (last 4 weeks, weighted to the last 2) blended 60/40 with usage (carries + targets per game) for RB, WR and TE, not Yahoo\'s one-week projections. Your matchup odds only add optional close calls. A bench player must beat a starter by 15% and 2 points, and a proven starter needs more. Kickers and defenses are the exception: they swing with the matchup, so they go by Yahoo\'s projection for this week (a ' + PROJ_EDGE + '-point edge to swap). Players whose game has started are never moved. Times are as Yahoo shows them, in your time zone.'));
     b.append(jb, judged);
   };
   const renderStash = (b, R, sumEl) => {
@@ -2057,11 +2226,34 @@
   };
   let newsAlerts = [], newsSeen = [];
   const newsKey = n => normName(n.name) + '|' + n.phrase.toLowerCase();
+  // Checked 2026-11-16 in a real browser: the saved free-agent lists were all over 6 hours old (the snapshot saves them once
+  // a day), so role news almost never showed. When there is news and no fresh list for that position, read the same list
+  // the snapshot reads (cached 30 minutes, at most 3 positions), then check again.
+  const freshFreePos = () => {
+    const out = new Set();
+    try {
+      Object.keys(localStorage).forEach(k => {
+        if (!k.includes('/f1/' + leagueId + '/players?') || !/[?&]status=A(&|$|\|)/.test(k)) return;
+        const h = JSON.parse(localStorage.getItem(k)), pos = /[?&]pos=(\w+)/.exec(k);
+        if (h && pos && Date.now() - h.t <= FREE_LIST_HOURS * 3600000) out.add(pos[1]);
+      });
+    } catch (e) { /* storage blocked */ }
+    return out;
+  };
+  let newsRefetched = false;
   const refreshNews = async () => {
     const SL = await getSleeper().catch(() => null);
     if (!SL || !board) return;
-    const free = availableNames(), mine = new Set(board.roster.players.map(p => normName(p.name)));
-    newsAlerts = roleNews(SL).filter(n => free.has(normName(n.name)) && !mine.has(normName(n.name)) && !newsSeen.includes(newsKey(n))).slice(0, 3);
+    const mine = new Set(board.roster.players.map(p => normName(p.name)));
+    const fresh = () => roleNews(SL).filter(n => !mine.has(normName(n.name)) && !newsSeen.includes(newsKey(n)));
+    let free = availableNames();
+    const stale = [...new Set(fresh().filter(n => !free.has(normName(n.name))).map(n => n.pos))].filter(p => !freshFreePos().has(p)).slice(0, 3);
+    if (stale.length && !newsRefetched && Date.now() >= blockedUntil()) {
+      newsRefetched = true;
+      for (const pos of stale) { try { await fetchPage('S_S_2026', 0, { status: 'A', pos, sort: 'AR', myteam: '0' }); } catch (e) { break; } }
+      free = availableNames();
+    }
+    newsAlerts = fresh().filter(n => free.has(normName(n.name))).slice(0, 3);
     render();
   };
   const stashBanner = R => {
@@ -2070,6 +2262,7 @@
     const box = el('div', 'ff-news');
     box.appendChild(el('div', 'hd', 'Worth stashing: ' + list.map(c => c.name).join(', ')));
     list.forEach(c => box.appendChild(el('div', 'item', c.name + ' (' + c.team + ' ' + c.pos + '): ' + c.ros + '% rostered across Yahoo. ' + c.fit + '. ' + (clearText(c.status) || c.status) + '.')));
+    if (roomText(R)) box.appendChild(el('div', 'room', roomText(R)));
     box.appendChild(el('div', 'nt', 'From the Stash watch check on ' + new Date(list[0].at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + '. Read his note before you claim.'));
     const open = el('button', 'ff-btn', 'Open Stash watch'), ok = el('button', 'ff-btn', 'Got it');
     open.onclick = e => { e.stopPropagation(); state.view = 'stash'; if (!stashData || stashData.week !== board.week) loadStashView(); else render(); };
@@ -2106,6 +2299,8 @@
       row.append(nameLink(n.name, ''), el('span', null, ' (' + n.pos + ', ' + n.team + ') ' + (n.maybe ? 'may get' : 'is named for') + ' "' + n.phrase + '". '), el('span', 'nt', (n.date ? n.date + ': ' : '') + n.sentence));
       box.appendChild(row);
     });
+    const room = board && roomText(board.roster);
+    if (room) box.appendChild(el('div', 'room', room));
     const ok = el('button', 'ff-btn', 'Got it');
     ok.onclick = e => { e.stopPropagation(); newsSeen = newsSeen.concat(newsAlerts.map(newsKey)).slice(-60); kvSet('newsSeen:' + leagueId, newsSeen); newsAlerts = []; render(); };
     box.appendChild(ok);
@@ -2197,6 +2392,39 @@
     b.appendChild(el('div', 'ff-hint', both ? both + ' of these are also trending on Sleeper: when both agree, the move is more likely real.' : 'None of these are in Sleeper\'s top adds today.'));
   };
   const fmtSigned = v => (v > 0 ? '+' : '') + Number(v).toLocaleString();
+  // ---- Does usage help? Predict last week from the three weeks before it, with and without usage --------------------
+  // Reads only weekly list pages already saved in this browser. Points per opportunity comes from the three training weeks
+  // only, so the week being predicted never informs its own prediction.
+  const usageBacktest = week => {
+    const T = week - 1, train = [week - 4, week - 3, week - 2], rows = weeklyRows([T, ...train]);
+    const ppo = {};   // training weeks only: the held-out week never informs its own prediction
+    Object.values(rows).forEach(r => train.forEach(w => { const x = r.w[w]; if (!x) return; const a = ppo[r.pos] = ppo[r.pos] || { pts: 0, opp: 0 }; a.pts += x.pts; a.opp += x.opp; }));
+    const wavg = l => (l.length === 1 ? l[0] : 0.6 * (l.reduce((a, b) => a + b, 0) / l.length) + 0.4 * (l.slice(-2).reduce((a, b) => a + b, 0) / l.slice(-2).length));
+    let n = 0, ePts = 0, eBlend = 0;
+    Object.values(rows).forEach(r => {
+      const tw = train.filter(w => r.w[w]), held = r.w[T], a = ppo[r.pos];
+      if (!held || tw.length < 2 || !a || a.opp < 100) return;
+      const pPts = wavg(tw.map(w => r.w[w].pts)), pUse = wavg(tw.map(w => r.w[w].opp)) * (a.pts / a.opp);
+      n++; ePts += Math.abs(held.pts - pPts); eBlend += Math.abs(held.pts - ((1 - USE_W) * pPts + USE_W * pUse));
+    });
+    return n ? { week: T, n, pts: ePts / n, blend: eBlend / n } : { week: T, n: 0 };
+  };
+  const usageBox = async () => {
+    const box = el('div', 'ff-irbox'), id = 'usage-bt', body = el('div', 'ff-usebt' + (isOpen(id) ? ' open' : ''));
+    const r = board ? usageBacktest(board.week) : null;
+    const hist = (await kvGet('usageBT:' + leagueId)) || {};
+    if (r && r.n >= 30) { hist[r.week] = { n: r.n, pts: r.pts, blend: r.blend }; kvSet('usageBT:' + leagueId, hist); }
+    const weeks = Object.values(hist);
+    if (!weeks.length) body.appendChild(el('div', null, 'Not enough weeks saved yet: it needs the last four weeks of player lists in this browser (open a Players list or the Add / replace tab).'));
+    else {
+      const N = weeks.reduce((a, w) => a + w.n, 0), p = weeks.reduce((a, w) => a + w.pts * w.n, 0) / N, bl = weeks.reduce((a, w) => a + w.blend * w.n, 0) / N;
+      const word = bl < p * 0.97 ? 'Usage helped' : bl > p * 1.03 ? 'Usage hurt' : 'No clear difference';
+      body.appendChild(el('div', null, word + '. Predicting each week from the 3 before it, points alone missed by ' + f1(p) + ' points per player on average; points plus usage missed by ' + f1(bl) + ' (n = ' + N + ' player-weeks).'));
+      body.appendChild(el('div', 'ff-hint', weeks.length < 3 ? 'Based on ' + (weeks.length === 1 ? 'one week' : weeks.length + ' weeks') + ' so far: a single week is noisy.' : 'Over ' + weeks.length + ' weeks.'));
+    }
+    box.append(el('b', null, 'Does usage help? '), expander(id, 'Details', body), body);
+    return box;
+  };
   const renderTrends = (b, R, sumEl) => {
     b.appendChild(el('h3', null, 'Global player trends'));
     renderBuzz(b);
@@ -2233,6 +2461,8 @@
       b.appendChild(g);
       b.appendChild(el('div', 'ff-hint', 'From the latest ' + txSummary.n + ' transactions Yahoo lists, so it covers recent days only.'));
     }
+    const slot = el('div'); b.appendChild(slot);
+    usageBox().then(x => slot.replaceChildren(x)).catch(() => {});
     if (sumEl) { sumEl.className = ''; sumEl.textContent = ''; }
   };
   const refreshTrends = async () => {
@@ -2373,8 +2603,9 @@
           }).catch(() => progEnd());
         });
       }
+      kdDone.then(() => loadExtras(week)).catch(() => {});
       // once a day, quietly save a snapshot (a few seconds after the board so the page is not hammered)
-      setTimeout(() => { kdDone.then(() => takeSnapshot(board.roster, SL, week, false)).then(doc => { if (dropAlerts.length) render(); if (doc) { const st = document.querySelector('.ff-bar'); if (st) st.textContent += ' ' + snapStatus; } renderHealth(); }); }, TEST && typeof TEST.snapDelayMs === 'number' ? TEST.snapDelayMs : 4000);
+      setTimeout(() => { kdDone.then(() => takeSnapshot(board.roster, SL, week, false)).then(doc => { if (doc) refreshNews(); if (dropAlerts.length) render(); if (doc) { const st = document.querySelector('.ff-bar'); if (st) st.textContent += ' ' + snapStatus; } renderHealth(); }); }, TEST && typeof TEST.snapDelayMs === 'number' ? TEST.snapDelayMs : 4000);
       // light touch on the Yahoo list itself: tint your own players
       const ids = new Set(roster.players.map(p => p.id));
       if (onList && table) table.querySelectorAll('tr').forEach(tr => { const a = tr.querySelector('a.name'); if (a && ids.has(playerId(a))) tr.querySelectorAll('td').forEach(td => (td.style.background = '#f3ecff')); });
@@ -2388,6 +2619,190 @@
   // Your roster changes without a page load (Yahoo saves lineup moves in place, or you add/drop in another tab).
   // Re-read it then, so the board never keeps judging the old roster.
   const onMyTeam = new RegExp('^/f1/' + leagueId + '/' + league.teamId + '(/|$)').test(PATH);
+  // ---- Next week's kicker and defense: stream one when a free one projects clearly better ----------------------
+  // Read only once your own K and DEF have played this week (or are playing): before that, this week is what matters.
+  const STREAM_EDGE = 3, PLAYOFF_LOOK = 5;
+  const loadStreams = async (R, week) => {
+    const out = [];
+    for (const pos of ['DEF', 'K']) {
+      const mine = R.players.find(p => p.pos === pos && p.slot === pos);
+      if (!mine || !mine.locked) continue;
+      const nw = 'S_PW_' + (week + 1);
+      const free = await fetchPage(nw, 0, { status: 'A', pos, sort: 'PTS', myteam: '0' });
+      const own = await fetchPage(nw, 0, { status: 'T', fteam: league.teamId, pos, myteam: '1' });
+      const myProj = own[mine.id] ? num(own[mine.id]['Fan Pts']) : NaN;
+      if (isNaN(myProj)) continue;
+      const best = Object.entries(free).map(([id, o]) => ({ id, name: o.name, team: o._team || '', proj: num(o['Fan Pts']), bye: num(o['Bye']), oppPts: num(o['Pts vs.*']), status: o['Roster Status'] || '' }))
+        .filter(c => !isNaN(c.proj) && c.bye !== week + 1 && !inPending(c, 'adds')).sort((a, b) => b.proj - a.proj)[0];
+      if (!best || best.proj - myProj < STREAM_EDGE) continue;
+      const row = { pos, mine, myProj, best, word: pos === 'DEF' ? matchupWord(best.oppPts, oppCutOf(free)) : '', week: week + 1 };
+      // the first playoff week, once it is close: which of the two to hold (defenses only; cached half a day)
+      const pw = PLAYOFF_START;
+      if (pos === 'DEF' && pw > week + 1 && pw - week <= PLAYOFF_LOOK) {
+        const pf = await fetchPage('S_PW_' + pw, 0, { status: 'A', pos, sort: 'PTS', myteam: '0' }, '', 720);
+        const po = await fetchPage('S_PW_' + pw, 0, { status: 'T', fteam: league.teamId, pos, myteam: '1' }, '', 720);
+        const a = pf[best.id] ? num(pf[best.id]['Fan Pts']) : NaN, b = po[mine.id] ? num(po[mine.id]['Fan Pts']) : NaN;
+        if (!isNaN(a) && !isNaN(b)) row.playoff = { week: pw, best: a, mine: b };
+      }
+      out.push(row);
+    }
+    return out;
+  };
+  // ---- This week's matchup: opponent, records and Yahoo's own win probability, from the matchup page --------------
+  // The header reads "<your team> <manager> 4-5-0 | 8th ... vs <their team> <manager> 6-3-0 | 2nd ... Favorite 62% ... 38% Underdog".
+  const REC_RE = /^(\d+)-(\d+)(?:-(\d+))? \| \d+\w\w$/;
+  const parseMatchup = doc => {
+    const table = doc.querySelector('#statTable1');
+    if (!table) return null;
+    // every text-only element before the lineup table, in page order
+    const leaves = [...doc.body.querySelectorAll('*')].filter(e => !e.children.length && (e.compareDocumentPosition(table) & 4)).map(txt).filter(Boolean);
+    const recs = leaves.filter(t => REC_RE.test(t)), vs = leaves.indexOf('vs');
+    const mine = leaves.map(t => /^(Favorite|Underdog)\s+(\d+)%$/.exec(t)).find(Boolean);
+    if (vs < 0 || recs.length < 2 || !mine) return null;
+    const opp = leaves.slice(vs + 1).find(t => !REC_RE.test(t) && !/^\d+%|^(Favorite|Underdog)/.test(t));
+    const short = r => r.replace(/-0(?= \|)/, '').replace(/ \|.*/, '');
+    return { opp: opp || 'your opponent', oppRec: short(recs[1]), myRec: short(recs[0]), pct: +mine[2] };
+  };
+  const loadMatchup = async () => {
+    const ck = 'matchup:' + leagueId + ':' + league.teamId, hit = cacheGet(ck, CACHE_MIN);
+    if (hit !== undefined) return hit && hit.none ? null : hit;
+    let doc;
+    const q = new URLSearchParams(location.search);
+    // already on your own matchup this week: no request (a league-mate's matchup, or another week, is not yours)
+    if (/\/matchup(\/|$)/.test(PATH) && !q.get('week') && (!q.get('mid1') || q.get('mid1') === String(league.teamId))) doc = document;
+    else { const res = await yfetch('/f1/' + leagueId + '/matchup', { credentials: 'include' }); if (!res.ok) return null; doc = new DOMParser().parseFromString(await res.text(), 'text/html'); }
+    const m = parseMatchup(doc);
+    cacheSet(ck, m || { none: true });   // no odds (games over, layout changed): do not ask again for 30 minutes
+    return m;
+  };
+  // Close calls only: a bench player within 10% of a starter on the board's score. Underdogs want the higher best game,
+  // favorites the steadier player. Never a clear call (those are swaps) and never a player another move already names.
+  const closeCalls = (players, week, G, pct) => {
+    if (!(pct < 40 || pct > 60)) return [];
+    const under = pct < 40, out = [], used = new Set([...G.moves.keys(), ...(G.rows || []).filter(r => r.backup).map(r => r.backup.id)]);
+    const sc = p => startScore(p);
+    players.filter(s => !/^(BN|IR)$/.test(s.slot) && /^(RB|WR|TE)$/.test(s.pos) && !s.locked && canPlay(s, week) && !used.has(s.id)).forEach(s => {
+      if (out.length >= 2) return;
+      const b = players.filter(x => x.slot === 'BN' && !used.has(x.id) && !x.locked && canPlay(x, week) && x.injTag !== 'Q' && slotFits(x, s.slot) && !isNaN(sc(x)) && !isNaN(sc(s)) &&
+        Math.abs(sc(x) - sc(s)) <= 0.1 * Math.max(sc(x), sc(s)) &&
+        (under ? x.m.max >= s.m.max * 1.2 : x.m.good > s.m.good && x.m.played >= 3)).sort((a, c) => sc(c) - sc(a))[0];
+      if (!b) return;
+      used.add(b.id); used.add(s.id);
+      out.push(under ? { s, b, text: 'Underdog: start ' + b.name + ' over ' + s.name + '? Higher best game lately (' + f1(b.m.max) + ' vs ' + f1(s.m.max) + ')' }
+        : { s, b, text: 'Favorite: start ' + b.name + ' over ' + s.name + '? Steadier week to week (' + b.m.good + ' of ' + b.m.played + ' good games vs ' + s.m.good + ' of ' + s.m.played + ')' });
+    });
+    return out;
+  };
+  // ---- How the advice did: every Do now move seen during a week, then last week's real points --------------------
+  // A move stays in the log once shown, so following it (which makes it disappear from the board) still counts.
+  const adviceKey = w => 'advice:' + leagueId + ':' + w;
+  let adviceMemo = null;
+  const logAdvice = async (L, week) => {
+    const moves = L.fixes.filter(f => f.start).map(f => ({ start: f.start, sit: f.sit || { id: '', name: 'an empty slot' }, slot: f.slot })).concat(L.swaps.map(w => ({ start: w.start, sit: w.sit, slot: w.slot })));
+    if (!moves.length) return;
+    if (!adviceMemo || adviceMemo.week !== week) adviceMemo = { week, d: kvGet(adviceKey(week)).then(v => v || {}) };
+    const d = await adviceMemo.d;
+    let changed = false;
+    moves.forEach(m => { const k = m.start.id + '>' + (m.sit.id || 'empty'); if (!d[k]) { d[k] = { start: { id: m.start.id, name: m.start.name }, sit: { id: m.sit.id, name: m.sit.name }, slot: m.slot, t: Date.now() }; changed = true; } });
+    if (changed) kvSet(adviceKey(week), d);
+  };
+  // a past week on your team page: who was in which slot, and what each scored
+  const parsePastWeek = doc => {
+    const out = [];
+    doc.querySelectorAll('table[id^="statTable"]').forEach(t => {
+      const hr = [...t.rows].find(r => [...r.cells].some(c => txt(c) === 'Fan Pts'));
+      if (!hr) return;
+      const fp = [...hr.cells].map(txt).indexOf('Fan Pts');
+      [...t.rows].filter(r => r.querySelector('a.name')).forEach(r => {
+        const a = r.querySelector('a.name'), c = [...r.cells].map(txt), tm = /\b([A-Za-z.]+)\s*-\s*(QB|RB|WR|TE|K|DEF)\b/.exec([...r.querySelectorAll('.Fz-xxs')].map(txt).join(' ')) || [];
+        out.push({ id: playerId(a), name: txt(a), slot: c[0], pos: tm[2] || '', pts: num(c[fp]) });
+      });
+    });
+    return out;
+  };
+  // The most those points allowed in your slots. Single-position slots take the best at their position (swapping a
+  // better player into a flex never helps); the flex slots, a handful at most, are then tried every legal way.
+  const bestLineup = (rows, slots) => {
+    const left = rows.filter(r => !isNaN(r.pts)).sort((a, b) => b.pts - a.pts);
+    let total = 0;
+    Object.keys(slots).filter(k => !/^(BN|IR)$/.test(k) && !FLEX[k]).forEach(k => {
+      for (let i = 0; i < slots[k]; i++) { const j = left.findIndex(r => r.pos === k); if (j >= 0) total += left.splice(j, 1)[0].pts; }
+    });
+    const flex = Object.keys(slots).filter(k => FLEX[k]).flatMap(k => Array(slots[k]).fill(k));
+    const best = (i, used) => {
+      if (i >= flex.length) return 0;
+      let top = best(i + 1, used);   // leave this flex empty
+      left.forEach((r, j) => { if (!used.has(j) && FLEX[flex[i]].includes(r.pos)) { used.add(j); top = Math.max(top, r.pts + best(i + 1, used)); used.delete(j); } });
+      return top;
+    };
+    return total + best(0, new Set());
+  };
+  const loadLastWeek = async week => {
+    const w = week - 1;
+    if (w < 1) return null;
+    const ck = 'pastweek:' + leagueId + ':' + league.teamId + ':' + w;
+    let rows = cacheGet(ck, 180);   // stat corrections can still land early in the week
+    if (rows === undefined) {
+      const res = await yfetch('/f1/' + leagueId + '/' + league.teamId + '/team?&week=' + w, { credentials: 'include' });
+      if (!res.ok) return null;
+      rows = parsePastWeek(new DOMParser().parseFromString(await res.text(), 'text/html'));
+      cacheSet(ck, rows.length >= 8 ? rows : []);   // an unreadable page is not asked for again for 3 hours
+    }
+    if (rows.length < 8) return null;
+    const starting = r => !/^(BN|IR)$/.test(r.slot), yours = rows.filter(starting).reduce((a, r) => a + (isNaN(r.pts) ? 0 : r.pts), 0);
+    // the slots you had that week: the league's, or more if the page shows more (a league setting not read yet)
+    const slots = { ...SLOTS };
+    const seen = {}; rows.filter(starting).forEach(r => { seen[r.slot] = (seen[r.slot] || 0) + 1; });
+    Object.entries(seen).forEach(([k, n]) => { if (!(slots[k] >= n)) slots[k] = n; });
+    const best = Math.max(bestLineup(rows, slots), yours), log = Object.values((await kvGet(adviceKey(w))) || {});
+    const by = id => rows.find(r => r.id === id);
+    const moves = log.map(m => {
+      const a = by(m.start.id), b = m.sit.id ? by(m.sit.id) : null;
+      return { ...m, made: !!(a && starting(a) && (!b || !starting(b))), a: a ? a.pts : NaN, b: b ? b.pts : NaN };
+    });
+    const madeN = moves.filter(m => m.made).length;
+    const line = 'Last week: ' + (moves.length ? 'you made ' + madeN + ' of ' + moves.length + ' suggested move' + (moves.length > 1 ? 's' : '') + '.' : 'no moves suggested.') +
+      ' Best possible lineup ' + f1(best) + ', yours ' + f1(yours) + '.';
+    const details = moves.map(m => 'Start ' + m.start.name + ' over ' + m.sit.name + ': ' + (m.made ? 'made' : 'skipped') +
+      (isNaN(m.a) || isNaN(m.b) ? '' : ' (' + m.start.name + ' ' + f1(m.a) + ', ' + m.sit.name + ' ' + f1(m.b) + (m.made ? '' : '; the move you skipped scored ' + f1(Math.abs(m.a - m.b)) + (m.a >= m.b ? ' more' : ' less')) + ')'));
+    return { line, details: details.concat(['Best possible lineup is hindsight: the most these points allowed in your slots.']) };
+  };
+  // Extra reads that only add lines (next week's streams, this week's matchup, last week's results): after the board
+  // is drawn, one after another through yfetch, then one redraw. A failure leaves its line out, never a wrong number.
+  const loadExtras = async week => {
+    if (!board || state.view === 'wire' && !onTeam) return;
+    const R = board.roster, ex = board.extras = board.extras || {};
+    const midweek = [2, 3].includes(new Date(clockNow()).getDay());
+    if (!midweek) {   // Tuesday and Wednesday show last week instead
+      try { ex.matchup = await loadMatchup(); } catch (e) { if (/slow down|pausing/.test(String(e && e.message))) return; }
+      render();
+    }
+    if (midweek) {
+      try { const lw = await loadLastWeek(week); if (lw) { ex.lastLine = lw.line; ex.lastDetails = lw.details; } } catch (e) { if (/slow down|pausing/.test(String(e && e.message))) return; }
+      render();
+    }
+    try { ex.streams = await loadStreams(R, week); } catch (e) { if (/slow down|pausing/.test(String(e && e.message))) return; }
+    render();
+    if (TEST) { TEST.extrasDone = true; TEST.streams = ex.streams; }
+  };
+  // Game day: between his inactives time and his kickoff, a questionable starter's note is read again at most every 15 minutes,
+  // only when the board draws and the tab is in front. One read per player at a time; the board redraws when the word changes.
+  const NOTE_GAMEDAY_MIN = 15, noteChecked = {}, noteInFlight = new Set();
+  const checkInactives = (rows, now) => rows.forEach(async r => {
+    const p = r.q;
+    if (!r.known || r.word || p.locked || !p.kick || noteInFlight.has(p.id)) return;   // his own kickoff, not the backup's, ends the window
+    const kick = kickDate(p.kick.key, now);
+    if (now >= kick) return;
+    if (noteChecked[p.id] && Date.now() - noteChecked[p.id] < NOTE_GAMEDAY_MIN * 60000) return;
+    noteInFlight.add(p.id);
+    try {
+      if (document.visibilityState !== 'visible') return;
+      const d = await fetchNote(p.id, true, false, NOTE_GAMEDAY_MIN, () => document.visibilityState === 'visible' && clockNow() < kick && !p.locked);
+      noteChecked[p.id] = Date.now();
+      if (d) { p.note = d; p.out = outLevel(p); }   // an empty answer is not news: keep the note he had
+      render();
+    } catch (e) { /* no answer this time: the row keeps saying check Yahoo */ } finally { noteInFlight.delete(p.id); }
+  });
   const rosterSig = doc => parseRoster(doc).map(p => p.slot + ':' + p.id + ':' + p.injTag + ':' + p.gameLine).join(',');   // a kickoff counts as a change
   let lastSig = '', reloading = false, lastCheck = Date.now();
   const reloadRoster = async html => {
@@ -2427,7 +2842,7 @@
     }, 800);
   };
   if (TEST) {
-    TEST.api = { matchupText, setOppCut, lineupVerdict, claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
+    TEST.api = { setPpo: d => { ppoMemo = { week: curWeek || (board && board.week), d }; }, bestLineup, parsePastWeek: html => parsePastWeek(new DOMParser().parseFromString(html, 'text/html')), usageBacktest, pointsScore, usageScore, ppoOf, usageDecided, parseMatchup: html => parseMatchup(new DOMParser().parseFromString(html, 'text/html')), closeCalls, loadStreams, oppCutOf, gameWord, noteWhen, roomText, spareKD, coversNextBye, matchupText, setOppCut, lineupVerdict, claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
       GOOD, formText, summarizeTx, computeMovers, computeStreaks, checkRoster, pct, normName, nameKey, roleOf, roleNews, outLevel, proven, parseRoster, compare, coversBye, surplusStarter, seasonDone, irOption, suggestReplace, computeLineup, emptySlots, needsOf, startScore, setSlots: v => { SLOTS = v; }, getPending: () => pending, metrics, state, getYahooCount: () => yCount };
   }
   // The first visit to a league reads its settings; after that they come from storage and are re-read weekly.

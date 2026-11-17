@@ -10,7 +10,10 @@ own login, and you make every move yourself.
 
 - **Lineup tab.** Starters who are out or on bye and who to start instead, clear upgrades from your bench, a plan for
   each questionable starter (his backup, the last moment you can act, when inactives come out), flex-order tips for
-  Thursday and early games, and players whose games have started marked as locked.
+  Thursday and early games, and players whose games have started marked as locked. On game day it re-reads a
+  questionable starter's note after inactives and says whether he is active. It also shows Yahoo's win probability for
+  your matchup, which free kicker or defense to stream next week, and on Tuesday how last week's suggested moves turned
+  out.
 - **Add / replace tab.** The best free agents at a position, ranked by recent scoring and momentum, a side-by-side
   comparison with the player you would drop, and a claim plan with alternates if a waiver claim fails.
 - **Stash watch tab.** Injured free agents worth holding, with a return estimate checked against your playoffs.
@@ -27,7 +30,8 @@ These are drawn from the offline test data, not a real league (`npm run screensh
 | [![Lineup tab: the verdict with the next deadline, a questionable starter's backup plan, a flex-order tip and the lineup table](media/lineup.png)](media/lineup.png) | [![Add / replace tab: roster cards, the best available running backs, a claim plan with alternates and the comparison verdict](media/add-replace.png)](media/add-replace.png) | [![Stash watch tab: injured free agents ranked by return timing, with a stash verdict and its checks](media/stash.png)](media/stash.png) |
 | The verdict and next deadline, a plan for a questionable starter, a flex-order tip, and your lineup with locked players and recommended moves tagged. | Your roster, the best free agents at a position, a claim plan with alternates, and a side-by-side verdict. | Injured free agents worth holding, checked against your playoff weeks. |
 
-Players are judged on consistent scoring (the last 4 weeks, weighted to the last 2) and usage, not one-week
+Players are judged on consistent scoring (the last 4 weeks, weighted to the last 2) blended with usage (carries and
+targets), not one-week
 projections; kickers and defenses go by Yahoo's projection because they swing with the matchup. The full rules are in
 [extension/README.md](extension/README.md).
 

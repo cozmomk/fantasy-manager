@@ -58,8 +58,50 @@ describe('usage next to points', () => {
       const starter = { id: 's', name: 'Starter', pos: 'WR', out: 0, slot: 'WR', isStarter: true, bye: 7, m: m(9, 9, 8) };
       return window.__FF_TEST__.api.compare(c, r, { roster: [starter, r], week: 6 }).headline;
     }, [cUse, rUse]);
-    assert.match(await verdict(4.3, 11), /^KEEP Busy Benchman: Hot Pickup gets far less work/, 'the Cooper vs Wilson case');
+    // since usage counts in the score (D5, 2026-11-16) the work gap already keeps him; the separate rule is a backstop
+    assert.match(await verdict(4.3, 11), /^KEEP Busy Benchman/, 'the Cooper vs Wilson case');
     assert.doesNotMatch(await verdict(8, 11), /gets far less work/, 'a smaller gap does not trigger the rule');
+    await context.close();
+  });
+  it('usage counts in the start score: a busier player wins a near tie, quarterbacks and kickers are unchanged', async () => {
+    const { page, context } = await openBoard(browser, { pos: 'WR' });
+    await waitForBoard(page);
+    const r = await page.evaluate(() => {
+      const api = window.__FF_TEST__.api;
+      const p = (id, pos, avg, opp) => ({ id, name: id, pos, m: { avg, form: avg, oppAvg: opp, oppForm: opp, played: 4, good: 2, thr: 8 } });
+      const busy = p('busy', 'WR', 9.5, 10), idle = p('idle', 'WR', 10, 5), qb = p('qb', 'QB', 18, NaN);
+      api.setPpo({ WR: NaN });
+      const thin = [api.startScore(busy), api.pointsScore(busy)];   // under 200 opportunities saved: points only (D5)
+      api.setPpo({ WR: 1.6 });
+      return { thin, busy: api.startScore(busy), idle: api.startScore(idle), pts: [api.pointsScore(busy), api.pointsScore(idle)], qb: [api.startScore(qb), api.pointsScore(qb)],
+        decided: api.usageDecided(busy, idle), ppo: api.ppoOf('WR') };
+    });
+    assert.ok(r.pts[0] < r.pts[1], 'on points alone the idle player is ahead');
+    assert.ok(r.busy > r.idle, 'with usage, the busier one is');
+    assert.ok(r.decided, 'and the tool knows usage decided it');
+    assert.deepEqual(r.qb, [18, 18], 'no usage term for a quarterback');
+    assert.equal(r.thin[0], r.thin[1], 'too little saved data: no usage term');
+    assert.equal(r.ppo, 1.6);
+    await context.close();
+  });
+  it('the usage back-test predicts last week from the three before it, from saved pages only', async () => {
+    const { page, context, stats } = await openBoard(browser, { pos: 'WR' });
+    await waitForBoard(page);
+    const before = stats.yahoo.length;
+    const r = await page.evaluate(() => window.__FF_TEST__.api.usageBacktest(5));
+    assert.equal(r.week, 4, 'week 4 is held out; weeks 1-3 train');
+    assert.ok(r.n > 0, 'players with saved weekly rows are scored');
+    assert.ok(isFinite(r.pts) && isFinite(r.blend), 'both errors are numbers');
+    assert.equal(stats.yahoo.length, before, 'no Yahoo request');
+    // 40 receivers worth exactly 1 point per opportunity in weeks 11-13 and 5 in week 14: if week 4 leaked into the value of
+    // an opportunity, the blend's error would differ from points alone. Trained on weeks 1-3 only, the two are identical.
+    const seeded = await page.evaluate(() => {
+      const d = w => Object.fromEntries(Array.from({ length: 40 }, (_, i) => ['z' + i, { _pos: 'WR', 'GP*': '1', 'Fan Pts': String((w === 14 ? 5 : 1) * (6 + i % 5)), 'Att*': '0', 'Tgt*': String(6 + i % 5) }]));
+      [11, 12, 13, 14].forEach(w => localStorage.setItem('ffc3:/f1/111111/players?stat1=S_W_' + w + '&status=A&pos=WR', JSON.stringify({ t: Date.now(), d: d(w) })));
+      return window.__FF_TEST__.api.usageBacktest(15);   // weeks the board never loads: only the seeded pages count
+    });
+    assert.equal(seeded.n, 40);
+    assert.ok(Math.abs(seeded.pts - seeded.blend) < 1e-9, 'the held-out week never informs its own prediction: ' + JSON.stringify(seeded));
     await context.close();
   });
 });
