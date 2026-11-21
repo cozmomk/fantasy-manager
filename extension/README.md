@@ -13,7 +13,9 @@ folder as an unpacked Chrome extension instead:
 3. Open your team page (or any **Players** list) in a Yahoo league you belong to. The tray slides in from the right.
 
 After you edit `content.js`, click the reload arrow on the extension card, then refresh the Yahoo page. Use either the
-userscript or the unpacked extension, not both.
+userscript or the unpacked extension, not both. Switching from the userscript: the extension's first run copies what the
+userscript saved (daily snapshots, advice history, dismissed alerts) into extension storage, once, without overwriting
+anything the extension already saved. Then disable the userscript.
 
 ## The board (three steps, top to bottom)
 1. **Your roster.** Every player with slot, bye, a 4-week bar chart (green = a good game for that position), and

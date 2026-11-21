@@ -41,13 +41,31 @@
   const store = typeof chrome !== 'undefined' && chrome.storage ? chrome.storage.local : null;
   const key = 'slots:' + leagueId;
   // storage: extension storage when installed, page localStorage as a fallback (used when testing)
-  const kvGet = k => new Promise(res => {
+  // Moving from the userscript to the installed extension: the userscript kept everything in the page's storage under "ff:".
+  // Once, copy it into extension storage (snapshots, advice log, dismissed alerts...), never over anything already there.
+  // Pacing and pause state stay in the page's storage, where every copy reads them.
+  const PAGE_ONLY = /^ff:(lastReq|blockedUntil)$/;
+  const imported = !store ? Promise.resolve() : new Promise(res => {
+    try {
+      store.get(null, all => {
+        all = all || {};
+        if (all.importedFromPage) return res();
+        const add = {};
+        Object.keys(localStorage).filter(k => k.startsWith('ff:') && !PAGE_ONLY.test(k) && !(k.slice(3) in all)).forEach(k => {
+          try { add[k.slice(3)] = JSON.parse(localStorage.getItem(k)); } catch (e) { /* not ours */ }
+        });
+        add.importedFromPage = Date.now();
+        store.set(add, () => res());   // if extension storage is full, the flag is not set and it tries again next time
+      });
+    } catch (e) { res(); }
+  });
+  const kvGet = k => imported.then(() => new Promise(res => {
     try { if (store) store.get(k, o => res(o[k])); else res(JSON.parse(localStorage.getItem('ff:' + k) || 'null')); } catch (e) { res(undefined); }
-  });
-  const kvSet = (k, v) => new Promise(res => {
+  }));
+  const kvSet = (k, v) => imported.then(() => new Promise(res => {
     try { if (store) store.set({ [k]: v }, () => res()); else { localStorage.setItem('ff:' + k, JSON.stringify(v)); res(); } } catch (e) { res(); /* quota */ }
-  });
-  const kvRemove = k => new Promise(res => { try { if (store) store.remove(k, () => res()); else { localStorage.removeItem('ff:' + k); res(); } } catch (e) { res(); } });
+  }));
+  const kvRemove = k => imported.then(() => new Promise(res => { try { if (store) store.remove(k, () => res()); else { localStorage.removeItem('ff:' + k); res(); } } catch (e) { res(); } }));
   const load = () => kvGet(key);
   const save = v => kvSet(key, v);
   const cfgKey = 'cfg:' + leagueId;

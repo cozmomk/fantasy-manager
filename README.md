@@ -94,6 +94,7 @@ update checks for this script in Tampermonkey (its **Settings** tab for the scri
 
 Prefer not to use a userscript manager? The same code loads as an unpacked Chrome extension: turn on Developer mode
 in `chrome://extensions`, click **Load unpacked** and choose the `extension/` folder. Use one or the other, not both.
+Switching over keeps your history: the extension copies what the userscript saved on its first run.
 
 ## Using the tray
 
