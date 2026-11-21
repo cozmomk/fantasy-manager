@@ -108,7 +108,7 @@ export const MATCHUP = { pct: 55 };
 export const matchupHeader = () => {
   const me = MATCHUP.pct >= 50 ? ['Favorite ' + MATCHUP.pct + '%', 'Projected Winner', (100 - MATCHUP.pct) + '% Underdog'] : ['Underdog ' + MATCHUP.pct + '%', (100 - MATCHUP.pct) + '% Favorite', 'Projected Winner'];
   return `<section><div><span>Week 5: Oct 6 - Oct 12</span></div><div><a>${TEAM_NAME}</a><span>Test Manager</span><span>4-5-0 | 8th</span></div>` +
-    `<span>vs</span><div><a>Rival Squad</a><span>brian</span><span>6-3-0 | 2nd</span></div><div><span>${me[0]}</span><span>${me[1]}</span><span>${me[2]}</span></div></section>`;
+    `<span>vs</span><span>5.00</span><span>89.47</span><span>Orig Proj</span><span>72.98</span><span>Live Proj</span><div><a>Rival Squad</a><span>brian</span><span>6-3-0 | 2nd</span></div><div><span>${me[0]}</span><span>${me[1]}</span><span>${me[2]}</span></div></section>`;
 };
 
 // Yahoo's "Transaction Trends" page: adds, drops and trades across Yahoo's leagues for players available to you

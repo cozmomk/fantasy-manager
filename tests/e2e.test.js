@@ -44,7 +44,9 @@ describe('board loads and stays polite to Yahoo', () => {
   it('a reload within 30 minutes reuses the shared cache', async () => {
     const first = await openBoard(browser, { pos: 'WR' });
     await waitForBoard(first.page); await waitIdle(first.page);
-    const cold = first.stats.yahoo.filter(r => r.type !== 'document').length;
+    const n = () => first.stats.yahoo.filter(r => r.type !== 'document').length;
+    for (let last = -1; last !== n();) { last = n(); await first.page.waitForTimeout(1500); }   // the first load's background reads are done
+    const cold = n();
     await first.page.reload();
     await first.page.addScriptTag({ content: CONTENT_JS });
     await waitForBoard(first.page);

@@ -67,7 +67,12 @@
   let blockedMem = 0, failStreak = 0;    // the pause is also kept in memory, in case storage is full or blocked
   const blockedUntil = () => { let v = 0; try { v = Number(localStorage.getItem('ff:blockedUntil') || 0); } catch (e) { /* ignore */ } return Math.max(v, blockedMem); };
   const tripBreaker = () => { blockedMem = Date.now() + PAUSE_MIN * 60000; try { localStorage.setItem('ff:blockedUntil', String(blockedMem)); } catch (e) { /* ignore */ } };
+  // the count in the status line follows every request, including ones made after the board was drawn
+  const showCount = () => { const b = document.querySelector('.ff-bar'); if (b) b.textContent = b.textContent.replace(/(Yahoo requests so far on this page: )\d+/, '$1' + yCount); };
+  // While the board is first drawn from saved numbers, nothing may reach Yahoo: a page that was never saved ends that pass.
+  let stalePass = null;     // { old, at }: during that pass, whether an expired copy was used and when the oldest was saved
   const yfetch = (url, opts) => {
+    if (stalePass) return Promise.reject(new Error('skipped: drawing from saved numbers only'));
     const guard = opts && opts.ffGuard;
     if (guard) { opts = { ...opts }; delete opts.ffGuard; }
     const run = async () => {
@@ -79,7 +84,7 @@
         if (wait > 0) await sleep(wait);
         localStorage.setItem('ff:lastReq', String(Date.now()));
       } catch (e) { /* ignore */ }
-      yCount++; showProg();
+      yCount++; showProg(); showCount();
       const res = await fetch(url, opts);
       if (res.status === 403 || res.status === 429 || res.status === 999) {   // 999 is Yahoo's "Request denied"
         tripBreaker();
@@ -98,7 +103,13 @@
   // Bump the number whenever how pages are read changes, so pages cached by an older version are never reused.
   const CACHE_PREFIX = 'ffc3:';
   try { Object.keys(localStorage).filter(x => x.startsWith('ffc:')).forEach(x => localStorage.removeItem(x)); } catch (e) { /* ignore */ }
-  const cacheGet = (k, mins) => { try { const h = JSON.parse(localStorage.getItem(CACHE_PREFIX + k) || 'null'); return h && Date.now() - h.t < mins * 60000 ? h.d : undefined; } catch (e) { return undefined; } };
+  const cacheGet = (k, mins) => {
+    let h; try { h = JSON.parse(localStorage.getItem(CACHE_PREFIX + k) || 'null'); } catch (e) { return undefined; }
+    if (!h) return undefined;
+    if (Date.now() - h.t < mins * 60000) return h.d;
+    if (stalePass) { stalePass.old = true; stalePass.at = Math.min(stalePass.at, h.t); return h.d; }   // saved numbers, shown until fresh ones arrive
+    return undefined;
+  };
   const cacheSet = (k, d) => {
     const w = () => localStorage.setItem(CACHE_PREFIX + k, JSON.stringify({ t: Date.now(), d }));
     try { w(); } catch (e) {
@@ -301,7 +312,17 @@
   // Weekly stats of finished weeks do not change (apart from Yahoo's stat corrections in the days after), so they are kept much longer
   // than ownership and status. A list of YOUR players is keyed by who is on your roster, so a new add is never missing from it.
   let curWeek = 0, lastNet = true;
-  const ttlFor = stat => { const m = /^S_W_(\d+)$/.exec(stat); if (!m || !curWeek) return CACHE_MIN; const n = +m[1]; return n <= curWeek - 2 ? 720 : (n === curWeek - 1 ? 180 : CACHE_MIN); };
+  // Your own players' finished weeks are final once Yahoo's stat corrections are in (by the end of the Thursday after the week),
+  // so any copy saved after that is kept for the rest of the season. Free-agent pages keep the shorter limits: who appears on
+  // them changes as players are claimed.
+  const DAY_MS = 864e5;
+  const correctedAt = (n, now) => weekStart(now) + 3 * DAY_MS - (curWeek - 1 - n) * 7 * DAY_MS;   // Friday 00:00 after week n
+  const ttlFor = (stat, mine) => {
+    const m = /^S_W_(\d+)$/.exec(stat); if (!m || !curWeek) return CACHE_MIN;
+    const n = +m[1];
+    if (mine && n < curWeek) { const now = clockNow(), corr = correctedAt(n, now); if (now >= corr) return Math.max(180, (now - corr) / 60000); }
+    return n <= curWeek - 2 ? 720 : (n === curWeek - 1 ? 180 : CACHE_MIN);
+  };
   const fetchPage = async (stat, page, over, sig, ttlMin) => {
     const p = new URLSearchParams(location.search);
     p.delete('search'); p.set('sdir', '1');     // never inherit a name search or a reversed sort from the page's own address
@@ -310,7 +331,7 @@
     if (page) p.set('count', String(25 * page)); else p.delete('count');
     const url = '/f1/' + leagueId + '/players?' + p.toString();
     const ckey = sig ? url + '|' + sig : url;
-    const hit = cacheGet(ckey, ttlMin || ttlFor(stat));
+    const hit = cacheGet(ckey, ttlMin || ttlFor(stat, !!over && over.status === 'T'));
     if (hit !== undefined) { lastNet = false; return hit; }
     lastNet = true;
     const res = await yfetch(url, { credentials: 'include' });
@@ -1421,6 +1442,7 @@
   .ff-more{font:600 12px system-ui;border:0;background:none;color:var(--ff-option);text-decoration:underline;cursor:pointer;padding:2px 0;min-height:24px}
   .ff-optmore:not(.open),.ff-usebt:not(.open){display:none}
   .ff-verdict .ctx{color:var(--ff-muted);font-size:12px;margin-top:3px}
+  .ff-verdict .ff-stale{font-size:12px;margin-top:4px;font-style:italic}
   .ff-row .ff-more{display:none}
   #ff-tray:not(.wide) .ff-row .ff-more{display:inline-block}
   #ff-tray:not(.wide) .ff-row .l3{display:none}
@@ -1927,6 +1949,7 @@
     b.appendChild(el('h3', null, 'Week ' + week + ' start / sit'));
     const box = el('div', 'ff-verdict ' + kind); box.append(el('div', 'hd', headline), el('div', null, sub));
     if (nextLine) box.appendChild(el('div', 'nl', nextLine + ' · as of ' + clockText(now)));
+    if (board.stale) box.appendChild(el('div', 'ff-stale', 'Saved numbers from ' + clockText(board.stale) + '. Fresh ones are loading: wait for this line to go before you make a move.'));
     const ex = board.extras || {}, midweek = [2, 3].includes(new Date(now).getDay());
     // one muted context line at most: last week's results on Tuesday and Wednesday, this week's odds the rest of the week
     const ctx = midweek && ex.lastLine ? ex.lastLine : !midweek && ex.matchup && !guarded ? 'vs ' + ex.matchup.opp + ' (' + ex.matchup.oppRec + '): Yahoo gives you ' + ex.matchup.pct + '%' : '';
@@ -1936,7 +1959,7 @@
       ex.lastDetails.forEach(t => d.appendChild(el('div', 'ctx', t)));
       box.append(expander('lastweek', 'Details', d), d);
     }
-    if (!guarded && R.kd && !running) logAdvice(L, week).catch(() => {});   // only once the whole board is in: no half-loaded advice
+    if (!guarded && R.kd && !running && !board.stale) logAdvice(L, week).catch(() => {});   // only once the whole board is in: no half-loaded advice
     b.appendChild(box);
     const named = new Set();   // players the advice names: they get a kickoff pill in the table at narrow widths
     // ---- Do now: fixes and swaps --------------------------------------------------------------------------------
@@ -2309,7 +2332,7 @@
   let buzzData = null;       // { loading } | { rows, at } | { error }
   const BUZZ_POS = ['QB', 'RB', 'WR', 'TE'];
   const fetchBuzz = async pos => {
-    const ck = 'buzz:' + leagueId + ':' + pos + ':' + dayKey(), hit = cacheGet(ck, CACHE_MIN);
+    const ck = 'buzz:' + leagueId + ':' + pos + ':' + dayKey(), hit = cacheGet(ck, 24 * 60);   // the key carries the date, so a copy lasts until the day ends
     if (hit !== undefined) return hit;
     const res = await yfetch('/f1/' + leagueId + '/buzzindex?sort=BI_S&date=' + dayKey() + '&src=combined&bimtab=A&trendtab=O&pos=' + pos, { credentials: 'include' });
     if (!res.ok) return [];
@@ -2543,6 +2566,18 @@
       progStage('Reading your roster', 5);
       // offense first so the lineup shows quickly; kicker and defense stats follow in the background
       const addP = onAdd ? readAddPlayer() : null;
+      // On your team page, draw the board at once from numbers saved earlier (no requests: a page never saved ends this pass),
+      // then load fresh numbers as usual and redraw. Skipped when everything saved is still fresh, since then the normal pass is instant.
+      if (!addP && !onList && !(TEST && TEST.noStaleFirst)) {
+        stalePass = { old: false, at: Infinity };
+        let early = null;
+        try { early = await loadRoster(week, SL, 'K'); } catch (e) {
+          rosterCache = null;
+          try { early = await loadRoster(week, SL, 'O'); } catch (e2) { early = null; }
+        }
+        const sp = stalePass; stalePass = null; rosterCache = null;
+        if (early && sp.old) { board = { roster: early, radar: null, listPos, week, stale: sp.at }; render(); mark('saved board shown'); }
+      }
       const roster = await loadRoster(week, SL, onList ? listPos : (addP ? addP.pos : 'O'));
       mark('roster loaded');
       progStage('Roster loaded', 35);
@@ -2659,7 +2694,10 @@
     const recs = leaves.filter(t => REC_RE.test(t)), vs = leaves.indexOf('vs');
     const mine = leaves.map(t => /^(Favorite|Underdog)\s+(\d+)%$/.exec(t)).find(Boolean);
     if (vs < 0 || recs.length < 2 || !mine) return null;
-    const opp = leaves.slice(vs + 1).find(t => !REC_RE.test(t) && !/^\d+%|^(Favorite|Underdog)/.test(t));
+    // once games start, live scores and projections sit between "vs" and the opponent: his name is two lines above his record
+    const ri = leaves.indexOf(recs[1], vs + 1), byRec = ri > vs + 2 ? leaves[ri - 2] : '';
+    const opp = byRec && !/^[\d.%-]+$|Proj$/.test(byRec) ? byRec
+      : leaves.slice(vs + 1).find(t => !REC_RE.test(t) && !/^[\d.%-]+$|Proj$|^(Favorite|Underdog)/.test(t));
     const short = r => r.replace(/-0(?= \|)/, '').replace(/ \|.*/, '');
     return { opp: opp || 'your opponent', oppRec: short(recs[1]), myRec: short(recs[0]), pct: +mine[2] };
   };
@@ -2842,7 +2880,7 @@
     }, 800);
   };
   if (TEST) {
-    TEST.api = { setPpo: d => { ppoMemo = { week: curWeek || (board && board.week), d }; }, bestLineup, parsePastWeek: html => parsePastWeek(new DOMParser().parseFromString(html, 'text/html')), usageBacktest, pointsScore, usageScore, ppoOf, usageDecided, parseMatchup: html => parseMatchup(new DOMParser().parseFromString(html, 'text/html')), closeCalls, loadStreams, oppCutOf, gameWord, noteWhen, roomText, spareKD, coversNextBye, matchupText, setOppCut, lineupVerdict, claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
+    TEST.api = { ttlFor: (stat, mine) => ttlFor(stat, mine), setPpo: d => { ppoMemo = { week: curWeek || (board && board.week), d }; }, bestLineup, parsePastWeek: html => parsePastWeek(new DOMParser().parseFromString(html, 'text/html')), usageBacktest, pointsScore, usageScore, ppoOf, usageDecided, parseMatchup: html => parseMatchup(new DOMParser().parseFromString(html, 'text/html')), closeCalls, loadStreams, oppCutOf, gameWord, noteWhen, roomText, spareKD, coversNextBye, matchupText, setOppCut, lineupVerdict, claimPlan, clearText, parseKick, kickText, lockedLine, kickDate, gamePlan, practiceLine, rosterSig: html => rosterSig(new DOMParser().parseFromString(html, 'text/html')), rerender: () => render(), readAddPlayer, loadOne, parseDoc, parseTransactions, parseReturn, stashFit, stashQuality, classify, segmentRest, txKind, metaSplit,
       GOOD, formText, summarizeTx, computeMovers, computeStreaks, checkRoster, pct, normName, nameKey, roleOf, roleNews, outLevel, proven, parseRoster, compare, coversBye, surplusStarter, seasonDone, irOption, suggestReplace, computeLineup, emptySlots, needsOf, startScore, setSlots: v => { SLOTS = v; }, getPending: () => pending, metrics, state, getYahooCount: () => yCount };
   }
   // The first visit to a league reads its settings; after that they come from storage and are re-read weekly.

@@ -64,7 +64,8 @@ link whenever a new release is published. Every release is also listed on the re
 
 Go to `https://football.fantasysports.yahoo.com`, open one of your leagues and click **My Team**. The tray slides in
 from the right. The first visit to a league reads its settings (scoring, roster slots, playoff weeks) and takes about
-10 to 30 seconds, because requests to Yahoo are deliberately spaced out. Later visits reuse what was saved.
+10 to 30 seconds, because requests to Yahoo are deliberately spaced out. Later visits reuse what was saved, and your
+team page shows the last saved board straight away while it refreshes.
 
 The tray works on your team page, the league home page, the matchup page, any **Players** list, the league
 **Settings** page and Yahoo's page for adding a player.

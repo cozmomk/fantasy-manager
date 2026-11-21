@@ -49,7 +49,12 @@ A long-term injury to the candidate is an automatic "don't add".
   remembered and re-read weekly. Opening the league's **Settings** page reads them straight away.
 - Superflex (Q/W/R/T) slots count: a second QB is treated as a starter. Slots it cannot read, such as defensive players, are named on the Lineup tab.
 - RB, WR and TE "good game" thresholds rise with points per reception: RB +2, WR +4 and TE +2 per point. Half-PPR gives RB 9, WR 10, TE 7. The QB threshold rises by 2 per extra passing TD point, so 6-point leagues use 20.
-- Fetched Yahoo views and notes are cached for 30 minutes, shared across tabs.
+- Fetched Yahoo views and notes are cached for 30 minutes, shared across tabs. Your own players' finished weeks are kept
+  for the season once Yahoo's stat corrections are in (the Friday after the week), and Yahoo's trending lists for the
+  rest of the day.
+- On your team page the board is drawn at once from the numbers saved last time, with the line "Saved numbers from
+  9:05 am. Fresh ones are loading", then redrawn when fresh numbers arrive. Wait for that line to go before you act.
+  It makes no requests: if a page was never saved, the board simply waits for fresh numbers.
 
 ## Limits
 - It reads text, not meaning: always read the note it shows before spending priority.
