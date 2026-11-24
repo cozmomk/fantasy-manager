@@ -29,7 +29,8 @@
   const onList = /\/(players|playersearch)(\/|$)/.test(PATH), onSettings = /\/settings/.test(PATH);
   const onTeam = new RegExp('^/f1/' + leagueId + '(/(' + league.teamId + '|matchup)(/|$)|/?$)').test(PATH);   // league home, your team, your matchup: Lineup first
   const onAdd = /\/addplayer\/?$/.test(PATH);   // Yahoo's page for adding one player: compare him with who you would drop
-  if (!onList && !onSettings && !onTeam && !onAdd) return;
+  const onBuzz = /\/buzzindex\/?$/.test(PATH);  // Yahoo's Transaction Trends page: open on the Trends tab
+  if (!onList && !onSettings && !onTeam && !onAdd && !onBuzz) return;
   // Two copies on one page (for example an old install plus a newer one) would double every request.
   // The attribute lives on the shared DOM, so it is visible across the extension's isolated world and the page's.
   if (document.documentElement.dataset.ffLoaded) return;
@@ -291,11 +292,23 @@
   };
 
   let weekGuessed = false;
+  // Pages without a week on them (Transaction Trends) use the week last read in this league, moved on by the Tuesdays since.
+  const weekKey = 'ff:week:' + leagueId;
   const readWeek = () => {
     const t = document.body.innerText;
     const m = t.match(/Week (\d+) \(proj\)/) || t.match(/Week (\d+): [A-Z][a-z]{2} \d/) || t.match(/Week (\d+) stats/) || t.match(/Week (\d+) Matchups/) || t.match(/Week (\d+)\s+Next 4 Wks/);   // stats dropdown, the matchup/team header, the league home's matchups box, or the add page's rankings
-    weekGuessed = !m;
-    return m ? parseInt(m[1], 10) : DEFAULT_WEEK;
+    const ws = weekStart(clockNow());
+    if (m) {
+      const w = parseInt(m[1], 10);
+      try { localStorage.setItem(weekKey, JSON.stringify({ w, at: ws })); } catch (e) { /* ignore */ }
+      weekGuessed = false;
+      return w;
+    }
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(weekKey) || 'null'); } catch (e) { /* ignore */ }
+    if (saved && saved.w > 0 && ws >= saved.at) { weekGuessed = false; return saved.w + Math.round((ws - saved.at) / (7 * 864e5)); }
+    weekGuessed = true;
+    return DEFAULT_WEEK;
   };
   // a defense has no numeric id, and Yahoo spells it differently on different pages ("Seahawks" / "Seattle"), so key it by team
   const playerId = a => ((a.getAttribute('href') || '').match(/(\d+)\/?(?:[?#].*)?$/) || [])[1] || nameKey(txt(a)) || txt(a);
@@ -1494,7 +1507,7 @@
     });
     return wrap;
   };
-  const state = { cand: null, rep: null, view: onList || onAdd ? 'wire' : 'lineup', stash: null, radarPos: null };
+  const state = { cand: null, rep: null, view: onList || onAdd ? 'wire' : (onBuzz ? 'trends' : 'lineup'), stash: null, radarPos: null };
   const RADAR_POS = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
   let radarLoading = false;
   let trendData = null;   // { snaps, movers, streaks, txSummary }
@@ -2611,7 +2624,7 @@
       }
       if (!state.rep) state.rep = defaultRep(roster, state.radarPos);
       const backToStash = !!(onList && savedSel && savedSel.view === 'stash');
-      const backToTrends = !!(onList && savedSel && savedSel.view === 'trends');
+      const backToTrends = onBuzz || !!(onList && savedSel && savedSel.view === 'trends');
       if (backToStash) state.view = 'stash';
       if (backToTrends) state.view = 'trends';
       // show the board as soon as your roster is in (Lineup tab, roster cards, pending claims); the wire scan fills in afterwards

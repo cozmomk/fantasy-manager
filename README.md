@@ -68,7 +68,7 @@ from the right. The first visit to a league reads its settings (scoring, roster 
 team page shows the last saved board straight away while it refreshes.
 
 The tray works on your team page, the league home page, the matchup page, any **Players** list, the league
-**Settings** page and Yahoo's page for adding a player.
+**Settings** page, Yahoo's page for adding a player and Yahoo's **Transaction Trends** page (where it opens on Trends).
 
 ## Updating
 

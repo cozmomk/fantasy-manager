@@ -1,6 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { launch, openBoard, waitForBoard, waitIdle, api, CONTENT_JS } from './helpers.js';
+import { launch, openBoard, waitForBoard, waitIdle, api, teamUrl, CONTENT_JS } from './helpers.js';
 
 let browser;
 before(async () => { browser = await launch(); });
@@ -124,6 +124,32 @@ describe('Trends tab', () => {
       return t ? [...t.rows].slice(1).map(r => r.cells[0].querySelector('.ff-link').innerText.trim()) : null;
     });
     assert.deepEqual(players, ['Roman Wilson']);
+    await context.close();
+  });
+});
+
+describe("Yahoo's Transaction Trends page", () => {
+  const THU = Date.parse('2026-10-08T12:00:00'), NEXT_THU = Date.parse('2026-10-15T12:00:00');   // week 5, then week 6
+  const onTrendsTab = page => page.waitForFunction(() => document.querySelectorAll('.ff-board table.ff-cmp tr').length > 3, null, { timeout: 30000 });
+
+  it('opens the board on the Trends tab, with the week moved on from the one read earlier in this league', async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const first = await openBoard(browser, { url: teamUrl('matchup'), context, now: THU });
+    await first.page.waitForSelector('.ff-board', { timeout: 30000 });
+    await first.page.close();
+    const { page } = await openBoard(browser, { url: teamUrl('buzzindex'), context, now: NEXT_THU });
+    await onTrendsTab(page);
+    assert.equal(await page.locator('.ff-tabbtn.on').first().innerText(), 'Trends');
+    assert.match(await page.locator('.ff-bar').innerText(), /week 6\b/);
+    assert.doesNotMatch(await page.locator('body').innerText(), /Could not read the current week/);
+    await context.close();
+  });
+
+  it('with no week read before in this league, it still opens and says the week is a guess', async () => {
+    const { page, context } = await openBoard(browser, { url: teamUrl('buzzindex') });
+    await onTrendsTab(page);
+    assert.equal(await page.locator('.ff-tabbtn.on').first().innerText(), 'Trends');
+    await page.waitForFunction(() => /Could not read the current week/.test(document.getElementById('ff-health')?.innerText || ''), null, { timeout: 10000 });
     await context.close();
   });
 });
